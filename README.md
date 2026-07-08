@@ -12,7 +12,7 @@ per-model breakdowns, a daily notification, and a Cost Coach. Everything stays o
 Requires the Swift toolchain once: `xcode-select --install`.
 
 ```bash
-git clone <this-repo-url> && cd AIUsageTracker
+git clone git@github.com:ishaybs1/ai-usage.git && cd ai-usage
 ./install.sh            # build -> /Applications -> auto-start at login -> launch
 ```
 
