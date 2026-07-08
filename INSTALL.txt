@@ -1,0 +1,44 @@
+AI Usage Tracker — install (macOS 13+)
+=======================================
+
+A menu-bar app that shows your personal Claude Code + Cursor spend, with a daily
+notification and a Cost Coach. Everything stays on your Mac — nothing is uploaded.
+
+
+SIMPLEST INSTALL (one paste) ★
+------------------------------
+1. Download this zip to your ~/Downloads folder.
+2. Open Terminal, paste this ONE line, press Return:
+
+cd ~/Downloads && Z=$(ls -t AIUsageTracker*.zip | head -1) && ditto -x -k "$Z" /tmp/aiu && xattr -dr com.apple.quarantine /tmp/aiu/AIUsageTracker/AIUsageTracker.app && rm -rf /Applications/AIUsageTracker.app; cp -R /tmp/aiu/AIUsageTracker/AIUsageTracker.app /Applications/ && osascript -e 'tell application "System Events" to delete (every login item whose name is "AIUsageTracker")' 2>/dev/null; osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/AIUsageTracker.app", hidden:true, name:"AIUsageTracker"}' && open /Applications/AIUsageTracker.app && echo "Done — 🧠 is in your menu bar and will auto-start at login."
+
+That's it. It installs to /Applications, skips the Gatekeeper warning, launches now,
+and sets it to open automatically on every restart. (macOS may ask once to "control
+System Events" — click OK; that's what registers the auto-start.)
+
+Look for the  🧠  in your menu bar (⌘-drag to reposition).
+
+
+PREFER CLICKING? (manual)
+-------------------------
+1. Unzip → drag AIUsageTracker.app into /Applications.
+2. RIGHT-CLICK it → Open → Open (needed the first time only).
+3. To auto-start: System Settings → General → Login Items → + → pick the app.
+
+
+WHAT IT READS (all local, read-only)
+-------------------------------------
+• Claude Code usage:  ~/.claude/projects/*.jsonl   (est. — priced at list rates)
+• Cursor usage:       your existing Cursor login    (actual charged amount)
+Each person sees only their own numbers.
+
+DAILY DIGEST
+------------
+"Notify me on this Mac" is on by default — a local notification each day with your
+spend + a tip. Change the hour (or add a Slack channel) in 🧠 → Cost Coach.
+
+TROUBLESHOOTING
+---------------
+• No 🧠 icon: it may be hidden — ⌘-drag other menu-bar icons to reveal it.
+• Cursor shows "n/a": sign into Cursor on this Mac, then reopen the app.
+• Turn off auto-start: System Settings → General → Login Items → remove it.

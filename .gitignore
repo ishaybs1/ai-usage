@@ -1,0 +1,5 @@
+.build/
+dist/
+*.app/
+*session.txt
+.DS_Store
