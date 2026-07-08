@@ -45,7 +45,22 @@ Key files: `DataSource/TokenPricing.swift` (rates), `DataSource/CursorPersonalAP
 (Cursor usage, personal-token endpoint), `ViewModels/UsageViewModel.swift` (aggregation),
 `Coach/` (tips + daily digest).
 
+## Update nudges (optional)
+
+The app can show an "Update available" banner in the popover when a teammate is behind. It's
+off until you point it at a feed:
+
+1. Host `latest.json` (see the sample in this repo) at a stable URL — a raw git file or an
+   Artifactory path. Its `version` is the newest release; `message` is the update command shown.
+2. Set the feed URL one of three ways: edit `UpdateChecker.defaultFeedURL`, set the `update.feedURL`
+   UserDefaults key, or export `AIUSAGE_UPDATE_URL` (for testing).
+3. Bump `latest.json`'s `version` each release. Anyone on an older build sees the nudge on launch.
+
+Verify headlessly: `AIUSAGE_UPDATE_URL=<url> ./.build/debug/AIUsageTracker --update-check`.
+
 ## Release
 
-Bump `CFBundleShortVersionString` in `package.sh`, run `./package.sh`, then distribute the zip
-(or push the commit so teammates `git pull && ./install.sh`).
+1. Bump `CFBundleShortVersionString` in `package.sh` (and `latest.json` if the feed is enabled).
+2. `./package.sh` → distribute `dist/AIUsageTracker.zip`, or push the commit so teammates
+   `git pull && ./install.sh`.
+3. Keep `./.build/debug/AIUsageTracker --self-test` green (65 checks) before releasing.

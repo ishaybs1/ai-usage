@@ -23,6 +23,7 @@ enum SelfTest {
         testDailySchedule()
         testCursorPersonalAPI()
         testMonthWindow()
+        testUpdateChecker()
         runAsyncPipelineTests()
 
         print("\n── \(passed) passed, \(failed) failed ──")
@@ -262,6 +263,28 @@ enum SelfTest {
         check("early month keeps 30-day rolling context",
               UsageViewModel.windowStart(asOf: early, today: early) <= day(2026, 6, 7),
               "got \(LocalUsageScanner.dayKey(UsageViewModel.windowStart(asOf: early, today: early)))")
+    }
+
+    // MARK: 6d. Update checker — version compare + feed parsing
+
+    private static func testUpdateChecker() {
+        section("UpdateChecker")
+        check("1.2 newer than 1.1", UpdateChecker.isNewer("1.2", than: "1.1"))
+        check("1.10 newer than 1.9 (numeric, not string)", UpdateChecker.isNewer("1.10", than: "1.9"))
+        check("2.0 newer than 1.9", UpdateChecker.isNewer("2.0", than: "1.9"))
+        check("same version is NOT newer", !UpdateChecker.isNewer("1.1", than: "1.1"))
+        check("older is NOT newer", !UpdateChecker.isNewer("1.0", than: "1.1"))
+
+        func data(_ s: String) -> Data { Data(s.utf8) }
+        check("JSON feed, newer -> Result",
+              UpdateChecker.parse(data(#"{"version":"1.2","message":"do X"}"#), current: "1.1")
+                == UpdateChecker.Result(version: "1.2", message: "do X"))
+        check("JSON feed, not newer -> nil",
+              UpdateChecker.parse(data(#"{"version":"1.1"}"#), current: "1.1") == nil)
+        check("bare version string works",
+              UpdateChecker.parse(data("1.3"), current: "1.1")?.version == "1.3")
+        check("bare version defaults the message",
+              UpdateChecker.parse(data("1.3"), current: "1.1")?.message.contains("git pull") == true)
     }
 
     // MARK: 7. End-to-end pipeline (@MainActor) — data sources + month-to-date + top sessions

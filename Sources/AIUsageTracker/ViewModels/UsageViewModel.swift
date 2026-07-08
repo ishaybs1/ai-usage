@@ -104,6 +104,7 @@ final class UsageViewModel: ObservableObject {
         self.usePersonalToken = UserDefaults.standard.object(forKey: Self.usePersonalTokenKey) as? Bool ?? true
         // Eagerly load at startup so the menu-bar title is populated before the popover opens.
         Task { await load() }
+        Task { await checkForUpdateOnce() }
     }
 
     /// The signed-in user's id, for highlighting "you" in the ranking table.
@@ -165,6 +166,17 @@ final class UsageViewModel: ObservableObject {
     private var cursorEmail: String { CursorConfig.load().email }
     /// Whether the month-to-date Cursor figure currently comes from the manual override.
     var cursorMonthIsManual: Bool { cursorRecentUnavailable && manualCursorMonth > 0 }
+
+    /// Set when a newer build is available (from the optional update feed); drives the popover nudge.
+    @Published private(set) var updateAvailable: UpdateChecker.Result?
+    private var didCheckUpdate = false
+
+    /// Check the update feed once per launch (no-op if no feed URL is configured).
+    func checkForUpdateOnce() async {
+        guard !didCheckUpdate else { return }
+        didCheckUpdate = true
+        updateAvailable = await UpdateChecker.check()
+    }
 
     /// Re-read Cursor config (after the user saves it in Settings) and reload.
     func applyCursorConfig(_ cfg: CursorConfig) async {

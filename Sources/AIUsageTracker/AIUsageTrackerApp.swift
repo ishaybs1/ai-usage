@@ -20,6 +20,23 @@ enum Main {
             exit(SelfTest.run())
         }
 
+        // Verify the update feed headlessly. Reads AIUSAGE_UPDATE_URL (or the configured feed).
+        if CommandLine.arguments.contains("--update-check") {
+            let sem = DispatchSemaphore(value: 0)
+            Task.detached {
+                defer { sem.signal() }
+                print("current version: \(UpdateChecker.currentVersion)")
+                print("feed URL: \(UpdateChecker.feedURL?.absoluteString ?? "(none configured)")")
+                if let r = await UpdateChecker.check() {
+                    print("UPDATE AVAILABLE -> v\(r.version): \(r.message)")
+                } else {
+                    print("up to date (or no feed / unreachable).")
+                }
+            }
+            sem.wait()
+            return
+        }
+
         // Verify the Cursor Admin API against a real key. Reads CURSOR_API_KEY / CURSOR_EMAIL
         // from the environment (or the saved Keychain/prefs) and prints a per-day breakdown.
         if CommandLine.arguments.contains("--cursor-test") {
