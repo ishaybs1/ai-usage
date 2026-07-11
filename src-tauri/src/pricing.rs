@@ -114,6 +114,24 @@ pub fn cost(model: &str, usage: &TokenUsage) -> f64 {
     rates.cost(usage)
 }
 
+/// API-equivalent OpenAI estimate for Codex logs. Codex subscription usage is not billed
+/// per token; these rates let the local tracker compare tools on a consistent basis.
+pub fn codex_cost(model: &str, usage: &TokenUsage) -> f64 {
+    let m = model.to_lowercase();
+    // Conservative fallback for new/private Codex model slugs. Rates are USD per 1M tokens.
+    let (input, cached, output) = if m.contains("mini") {
+        (0.25, 0.025, 2.0)
+    } else {
+        (1.25, 0.125, 10.0)
+    };
+    let uncached_input = (usage.input - usage.cache_read).max(0) as f64;
+    round_cents(
+        uncached_input * input / 1_000_000.0
+            + usage.cache_read as f64 * cached / 1_000_000.0
+            + usage.output as f64 * output / 1_000_000.0,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +156,12 @@ mod tests {
     fn unknown_falls_back_to_haiku() {
         let u = TokenUsage { input: 1_000_000, ..Default::default() };
         assert_eq!(cost("some-unknown-model", &u), 1.0);
+    }
+
+
+    #[test]
+    fn codex_cached_input_is_discounted() {
+        let u = TokenUsage { input: 1_000_000, cache_read: 800_000, output: 100_000, ..Default::default() };
+        assert_eq!(codex_cost("gpt-5", &u), 1.35);
     }
 }

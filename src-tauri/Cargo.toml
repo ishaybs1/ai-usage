@@ -1,7 +1,7 @@
 [package]
 name = "ai-usage-tracker"
-version = "1.0.0"
-description = "Local Claude Code and Cursor usage tracker"
+version = "1.1.0"
+description = "Local Claude Code, Cursor, and OpenAI Codex usage tracker"
 edition = "2021"
 
 [lib]
@@ -22,4 +22,3 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 walkdir = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
-

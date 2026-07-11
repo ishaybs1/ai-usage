@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ai-usage-tracker"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "chrono",
  "dirs 6.0.0",

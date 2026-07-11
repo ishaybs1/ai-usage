@@ -32,15 +32,20 @@ pub struct SessionAccum {
 pub struct DayUsageAggregate {
     pub claude_cost: f64,
     pub cursor_cost: f64,
+    pub codex_cost: f64,
     pub claude_by_model: HashMap<String, f64>,
     pub cursor_by_model: HashMap<String, f64>,
+    pub codex_by_model: HashMap<String, f64>,
     pub claude_by_product: HashMap<String, f64>,
     pub claude_tokens: TokenUsage,
     pub cursor_tokens: TokenUsage,
+    pub codex_tokens: TokenUsage,
     pub claude_sessions: HashSet<String>,
     pub cursor_sessions: HashSet<String>,
+    pub codex_sessions: HashSet<String>,
     pub claude_messages: i64,
     pub cursor_messages: i64,
+    pub codex_messages: i64,
     /// keyed by "claude:<sessionId>" / "cursor:<composerId>".
     pub sessions: HashMap<String, SessionAccum>,
 }
@@ -73,6 +78,10 @@ pub fn cursor_db() -> PathBuf {
         .join("state.vscdb")
 }
 
+pub fn codex_root() -> PathBuf {
+    dirs::home_dir().unwrap_or_default().join(".codex").join("sessions")
+}
+
 /// Local-time day key, "yyyy-MM-dd" (matches the Swift local-time day boundaries).
 pub fn day_key(dt: &DateTime<Local>) -> String {
     dt.format("%Y-%m-%d").to_string()
@@ -90,7 +99,85 @@ pub fn compute_by_day() -> HashMap<String, DayUsageAggregate> {
     let mut by_day: HashMap<String, DayUsageAggregate> = HashMap::new();
     scan_claude(&claude_root(), &mut by_day);
     scan_cursor(&cursor_db(), &mut by_day);
+    scan_codex(&codex_root(), &mut by_day);
     by_day
+}
+
+// ---------------------------------------------------------------------------
+// Codex
+// ---------------------------------------------------------------------------
+
+fn scan_codex(root: &PathBuf, by_day: &mut HashMap<String, DayUsageAggregate>) {
+    if !root.exists() { return; }
+    for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            parse_codex_file(path, by_day);
+        }
+    }
+}
+
+fn parse_codex_file(path: &std::path::Path, by_day: &mut HashMap<String, DayUsageAggregate>) {
+    let data = match std::fs::read(path) { Ok(d) => d, Err(_) => return };
+    let mut session_id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
+    let mut title: Option<String> = None;
+    let mut model = "codex".to_string();
+    let mut previous = TokenUsage::default();
+
+    for line in data.split(|&b| b == b'\n') {
+        let obj: Value = match serde_json::from_slice(line) { Ok(v) => v, Err(_) => continue };
+        let kind = obj.get("type").and_then(Value::as_str).unwrap_or("");
+        let payload = obj.get("payload").unwrap_or(&Value::Null);
+        if kind == "session_meta" {
+            if let Some(id) = payload.get("session_id").and_then(Value::as_str) { session_id = id.to_string(); }
+            if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
+                title = std::path::Path::new(cwd).file_name().and_then(|s| s.to_str()).map(|s| format!("Codex in {s}"));
+            }
+            continue;
+        }
+        if kind == "turn_context" {
+            if let Some(m) = payload.get("model").and_then(Value::as_str) { model = m.to_string(); }
+            continue;
+        }
+        if kind != "event_msg" || payload.get("type").and_then(Value::as_str) != Some("token_count") { continue; }
+        let total = match payload.get("info").and_then(|v| v.get("total_token_usage")) { Some(v) => v, None => continue };
+        let current = TokenUsage {
+            input: int_field(total.get("input_tokens")),
+            output: int_field(total.get("output_tokens")),
+            cache_read: int_field(total.get("cached_input_tokens")),
+            ..Default::default()
+        };
+        let delta = codex_delta(current, previous);
+        previous = current;
+        if delta.input + delta.output <= 0 { continue; }
+        let ts = obj.get("timestamp").and_then(Value::as_str).and_then(parse_iso8601).unwrap_or_else(Local::now);
+        let day = day_key(&ts);
+        let cost = pricing::codex_cost(&model, &delta);
+        let agg = by_day.entry(day).or_default();
+        agg.codex_cost = round_cents(agg.codex_cost + cost);
+        add_model(&mut agg.codex_by_model, &model, cost);
+        agg.codex_tokens += delta;
+        agg.codex_sessions.insert(session_id.clone());
+        agg.codex_messages += 1;
+        let key = format!("codex:{session_id}");
+        let s = agg.sessions.entry(key).or_insert_with(|| SessionAccum { tool: "Codex".to_string(), title: title.clone(), ..Default::default() });
+        s.cost = round_cents(s.cost + cost);
+        s.messages += 1;
+        *s.by_model.entry(model.clone()).or_insert(0.0) += cost;
+        s.tokens += delta;
+    }
+}
+
+fn codex_delta(current: TokenUsage, previous: TokenUsage) -> TokenUsage {
+    if current.input < previous.input || current.output < previous.output {
+        return current;
+    }
+    TokenUsage {
+        input: current.input - previous.input,
+        output: current.output - previous.output,
+        cache_read: (current.cache_read - previous.cache_read).max(0),
+        ..Default::default()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -428,5 +515,12 @@ mod tests {
         assert_eq!(int_field(Some(&serde_json::json!("42"))), 42);
         assert_eq!(int_field(Some(&serde_json::json!(4.9))), 4);
         assert_eq!(int_field(None), 0);
+    }
+
+    #[test]
+    fn codex_cumulative_counts_become_deltas() {
+        let previous = TokenUsage { input: 1_000, output: 100, cache_read: 600, ..Default::default() };
+        let current = TokenUsage { input: 1_600, output: 180, cache_read: 900, ..Default::default() };
+        assert_eq!(codex_delta(current, previous), TokenUsage { input: 600, output: 80, cache_read: 300, ..Default::default() });
     }
 }
