@@ -22,7 +22,7 @@ function App(){
  const saveBudget=async(n:number)=>{setBudget(n);const s=await Store.load('settings.json');await s.set('budget',n);await s.save()};
  const toggleStartup=async(v:boolean)=>{v?await enable():await disable();setStartup(v)};
  const projection=data?data.month/(new Date().getDate())*new Date(new Date().getFullYear(),new Date().getMonth()+1,0).getDate():0;
- return <div className="shell"><aside><div className="brand"><div className="brandmark"><Zap size={19}/></div><div><strong>AI Usage</strong><small>LOCAL TRACKER</small></div></div><nav>
+ return <div className="shell"><aside><div className="brand"><div className="brandmark"><Brain size={20}/></div><div><strong>AI Usage</strong><small>LOCAL TRACKER</small></div></div><nav>
   <button className={tab==='dashboard'?'active':''} onClick={()=>setTab('dashboard')}><BarChart3/>Dashboard</button><button className={tab==='coach'?'active':''} onClick={()=>setTab('coach')}><Lightbulb/>Cost coach</button><button className={tab==='settings'?'active':''} onClick={()=>setTab('settings')}><Settings/>Settings</button>
  </nav><div className="local"><span className="dot"/>Local only<small>Your data never leaves this PC</small></div></aside>
  <main><header><div><h1>{tab==='dashboard'?'Usage dashboard':tab==='coach'?'Cost coach':'Settings'}</h1><p>{tab==='dashboard'?'Claude Code + Cursor + OpenAI Codex from local sessions':tab==='coach'?'Same results, fewer turns.':'Configure your local tracker'}</p></div><button className="refresh" onClick={load} disabled={loading}><RefreshCw className={loading?'spin':''}/>{loading?'Scanning…':'Refresh'}</button></header>
