@@ -96,7 +96,9 @@ pub fn run() {
             let show=MenuItem::with_id(app,"show","Open dashboard",true,None::<&str>)?;
             let quit=MenuItem::with_id(app,"quit","Quit",true,None::<&str>)?;
             let menu=Menu::with_items(app,&[&show,&quit])?;
-            TrayIconBuilder::new().menu(&menu).tooltip("AI Usage Tracker").on_menu_event(|app,e| match e.id.as_ref(){"quit"=>app.exit(0),"show"=>{if let Some(w)=app.get_webview_window("main"){let _=w.show();let _=w.set_focus();}},_=>{}}).on_tray_icon_event(|tray,_|{if let Some(w)=tray.app_handle().get_webview_window("main"){let _=w.show();let _=w.set_focus();}}).build(app)?;
+            let tray_icon = app.default_window_icon().cloned()
+                .ok_or("Windows/macOS application icon is missing")?;
+            TrayIconBuilder::new().icon(tray_icon).menu(&menu).tooltip("AI Usage Tracker").on_menu_event(|app,e| match e.id.as_ref(){"quit"=>app.exit(0),"show"=>{if let Some(w)=app.get_webview_window("main"){let _=w.show();let _=w.set_focus();}},_=>{}}).on_tray_icon_event(|tray,_|{if let Some(w)=tray.app_handle().get_webview_window("main"){let _=w.show();let _=w.set_focus();}}).build(app)?;
             Ok(())
         })
         .on_window_event(|window,event| if let WindowEvent::CloseRequested{api,..}=event { api.prevent_close(); let _=window.hide(); })
