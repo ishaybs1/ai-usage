@@ -1,6 +1,6 @@
-mod coach;
+pub mod coach;
 mod pricing;
-mod scanner;
+pub mod scanner;
 
 use chrono::{Datelike, Local, NaiveDate};
 use serde::Serialize;
@@ -75,12 +75,18 @@ fn scan_usage(range: String) -> UsageSnapshot {
     for (key,a) in &data { if key.starts_with(&month_prefix) { claude_month += a.claude_cost; cursor_month += a.cursor_cost; codex_month += a.codex_cost; } }
     let model_breakdown = models.into_iter().map(|(model,(claude,cursor,codex))| ModelRow{model,claude:pricing::round_cents(claude),cursor:pricing::round_cents(cursor),codex:pricing::round_cents(codex),total:pricing::round_cents(claude+cursor+codex)}).collect();
     let yesterday = data.get(&yesterday_key).map(|a| a.claude_cost+a.cursor_cost+a.codex_cost).unwrap_or(0.0);
+    // Session-specific coaching from local transcript signals (Claude + Codex; Cursor gets rule-only tips).
+    let mut top_sessions = scanner::top_sessions(today, 3);
+    for s in &mut top_sessions {
+        let signals = coach::load_signals(&s.id);
+        s.tips = coach::coaching_tips(s, signals.as_ref(), 3);
+    }
     let mut insight_models = today.claude_by_model.clone();
     for (m,v) in &today.codex_by_model { *insight_models.entry(m.clone()).or_default() += v; }
     UsageSnapshot {
         as_of_date: today_key, today: pricing::round_cents(today.claude_cost+today.cursor_cost+today.codex_cost), month: pricing::round_cents(claude_month+cursor_month+codex_month), yesterday: pricing::round_cents(yesterday),
         claude_today:today.claude_cost,cursor_today:today.cursor_cost,codex_today:today.codex_cost,claude_month:pricing::round_cents(claude_month),cursor_month:pricing::round_cents(cursor_month),codex_month:pricing::round_cents(codex_month),sessions_today:today.sessions.len(),messages_today:today.claude_messages+today.cursor_messages+today.codex_messages,
-        product_breakdown:today.claude_by_product.clone(),model_breakdown,days,top_sessions:scanner::top_sessions(today,3),tips:coach::tips(),insight:coach::insight(&today.claude_by_product,&insight_models,today.claude_cost+today.codex_cost),
+        product_breakdown:today.claude_by_product.clone(),model_breakdown,days,top_sessions,tips:coach::tips(),insight:coach::insight(&today.claude_by_product,&insight_models,today.claude_cost+today.codex_cost),
         claude_path:scanner::claude_root().display().to_string(),cursor_path:scanner::cursor_db().display().to_string(),codex_path:scanner::codex_root().display().to_string()
     }
 }

@@ -109,21 +109,52 @@ pub fn normalize(raw: &str) -> String {
 
 /// Cost for a normalized-or-raw model id + usage. Unknown models price at the cheapest tier.
 pub fn cost(model: &str, usage: &TokenUsage) -> f64 {
+    cost_with_speed(model, usage, 1.0)
+}
+
+/// Same, with a fast-mode multiplier (Claude fast mode bills at 2× when `usage.speed`
+/// is non-standard).
+pub fn cost_with_speed(model: &str, usage: &TokenUsage, speed_multiplier: f64) -> f64 {
     let key = normalize(model);
     let rates = rates_for_key(&key).unwrap_or_else(|| rates_for_key(CHEAPEST_MODEL).unwrap());
-    rates.cost(usage)
+    round_cents(rates.cost(usage) * speed_multiplier)
+}
+
+/// OpenAI list rates for Codex model slugs: (input, cached input, output) USD per 1M tokens.
+/// Versioned slugs like "gpt-5.4-mini" fall through to their family tier below.
+fn codex_rates(m: &str) -> Option<(f64, f64, f64)> {
+    Some(match m {
+        s if s.starts_with("gpt-5-nano") => (0.05, 0.005, 0.40),
+        s if s.starts_with("gpt-5-mini") => (0.25, 0.025, 2.0),
+        s if s.starts_with("gpt-5-pro") => (15.0, 15.0, 120.0),
+        s if s.starts_with("gpt-5") && !s.contains("mini") && !s.contains("nano") => (1.25, 0.125, 10.0),
+        s if s.starts_with("codex-mini") => (1.5, 0.375, 6.0),
+        s if s.starts_with("gpt-4.1-nano") => (0.10, 0.025, 0.40),
+        s if s.starts_with("gpt-4.1-mini") => (0.40, 0.10, 1.60),
+        s if s.starts_with("gpt-4.1") => (2.0, 0.50, 8.0),
+        s if s.starts_with("gpt-4o-mini") => (0.15, 0.075, 0.60),
+        s if s.starts_with("gpt-4o") => (2.5, 1.25, 10.0),
+        s if s.starts_with("o4-mini") => (1.10, 0.275, 4.40),
+        s if s.starts_with("o3-pro") => (20.0, 20.0, 80.0),
+        s if s.starts_with("o3") => (2.0, 0.50, 8.0),
+        _ => return None,
+    })
 }
 
 /// API-equivalent OpenAI estimate for Codex logs. Codex subscription usage is not billed
 /// per token; these rates let the local tracker compare tools on a consistent basis.
 pub fn codex_cost(model: &str, usage: &TokenUsage) -> f64 {
     let m = model.to_lowercase();
-    // Conservative fallback for new/private Codex model slugs. Rates are USD per 1M tokens.
-    let (input, cached, output) = if m.contains("mini") {
-        (0.25, 0.025, 2.0)
-    } else {
-        (1.25, 0.125, 10.0)
-    };
+    // Exact table first; unknown/newer slugs fall back by family tier (nano < mini < base).
+    let (input, cached, output) = codex_rates(&m).unwrap_or_else(|| {
+        if m.contains("nano") {
+            (0.05, 0.005, 0.40)
+        } else if m.contains("mini") {
+            (0.25, 0.025, 2.0)
+        } else {
+            (1.25, 0.125, 10.0)
+        }
+    });
     let uncached_input = (usage.input - usage.cache_read).max(0) as f64;
     round_cents(
         uncached_input * input / 1_000_000.0
@@ -163,5 +194,23 @@ mod tests {
     fn codex_cached_input_is_discounted() {
         let u = TokenUsage { input: 1_000_000, cache_read: 800_000, output: 100_000, ..Default::default() };
         assert_eq!(codex_cost("gpt-5", &u), 1.35);
+    }
+
+    #[test]
+    fn codex_model_tiers() {
+        let u = TokenUsage { input: 1_000_000, output: 1_000_000, ..Default::default() };
+        assert_eq!(codex_cost("gpt-5-nano", &u), 0.45);
+        assert_eq!(codex_cost("gpt-5-mini", &u), 2.25);
+        assert_eq!(codex_cost("codex-mini-latest", &u), 7.5);
+        // Versioned future slugs fall back by family tier.
+        assert_eq!(codex_cost("gpt-5.4-mini", &u), 2.25);
+        assert_eq!(codex_cost("gpt-5.5", &u), 11.25);
+        assert_eq!(codex_cost("gpt-5.6-sol", &u), 11.25);
+    }
+
+    #[test]
+    fn fast_mode_multiplier_doubles() {
+        let u = TokenUsage { input: 1_000_000, output: 1_000_000, ..Default::default() };
+        assert_eq!(cost_with_speed("claude-opus-4-8", &u, 2.0), 60.0);
     }
 }
