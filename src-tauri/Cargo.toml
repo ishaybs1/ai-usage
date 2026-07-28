@@ -22,3 +22,4 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 walkdir = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json"] }

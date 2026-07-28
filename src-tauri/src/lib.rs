@@ -1,4 +1,5 @@
 pub mod coach;
+mod jira;
 mod pricing;
 pub mod scanner;
 
@@ -80,6 +81,12 @@ fn scan_usage(range: String) -> UsageSnapshot {
     for s in &mut top_sessions {
         let signals = coach::load_signals(&s.id);
         s.tips = coach::coaching_tips(s, signals.as_ref(), 3);
+        // Jira ticket auto-detect: branch first (e.g. feature/PROJ-123-x), then the title.
+        s.issue_key = signals
+            .as_ref()
+            .and_then(|sig| sig.branch.as_deref())
+            .and_then(jira::detect_issue_key)
+            .or_else(|| jira::detect_issue_key(&s.title));
     }
     let mut insight_models = today.claude_by_model.clone();
     for (m,v) in &today.codex_by_model { *insight_models.entry(m.clone()).or_default() += v; }
@@ -96,7 +103,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![scan_usage])
+        .invoke_handler(tauri::generate_handler![scan_usage, jira::jira_push_cost])
         .setup(|app| {
             use tauri::menu::{Menu, MenuItem}; use tauri::tray::TrayIconBuilder;
             let show=MenuItem::with_id(app,"show","Open dashboard",true,None::<&str>)?;

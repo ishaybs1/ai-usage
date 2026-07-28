@@ -62,6 +62,8 @@ pub struct SessionCost {
     pub title: String,
     /// Session-specific coaching lines, filled by the Cost Coach.
     pub tips: Vec<String>,
+    /// Jira issue key auto-detected from the session's git branch or title.
+    pub issue_key: Option<String>,
 }
 
 pub fn claude_root() -> PathBuf {
@@ -826,6 +828,7 @@ pub fn top_sessions(agg: &DayUsageAggregate, limit: usize) -> Vec<SessionCost> {
                 messages: s.messages,
                 title: s.title.clone().unwrap_or(fallback),
                 tips: Vec::new(),
+                issue_key: None,
             }
         })
         .collect();

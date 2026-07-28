@@ -7,3 +7,12 @@
 @media(max-width:1100px){.cards{grid-template-columns:repeat(2,1fr)}}
 .brandmark{background:transparent;overflow:hidden}
 .brandmark img{display:block;width:100%;height:100%;object-fit:contain}
+/* Jira integration. */
+.jira-row{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.jira-row input{width:110px;padding:6px 8px;border:1px solid #dfe1e7;border-radius:6px;font-size:11px;text-transform:uppercase}
+.jira-row button{border:1px solid #d6d0f5;background:#f6f4ff;color:#644add;border-radius:6px;padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer}
+.jira-row button:disabled{opacity:.5;cursor:default}
+.jira-done{color:#288153;font-size:11px;font-weight:600}
+.jira-err{color:#a22;font-size:10px}
+.jira-field{display:block;font-size:9px;font-weight:700;color:#9397a1;margin-top:12px}
+.jira-field input{display:block;width:100%;padding:9px;margin-top:5px;border:1px solid #dfe1e7;border-radius:7px;font-size:12px}
