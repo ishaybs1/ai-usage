@@ -20,25 +20,8 @@ enum Main {
             exit(SelfTest.run())
         }
 
-        // Verify the update feed headlessly. Reads AIUSAGE_UPDATE_URL (or the configured feed).
-        if CommandLine.arguments.contains("--update-check") {
-            let sem = DispatchSemaphore(value: 0)
-            Task.detached {
-                defer { sem.signal() }
-                print("current version: \(UpdateChecker.currentVersion)")
-                print("feed URL: \(UpdateChecker.feedURL?.absoluteString ?? "(none configured)")")
-                if let r = await UpdateChecker.check() {
-                    print("UPDATE AVAILABLE -> v\(r.version): \(r.message)")
-                } else {
-                    print("up to date (or no feed / unreachable).")
-                }
-            }
-            sem.wait()
-            return
-        }
-
-        // Verify the Cursor Admin API against a real key. Reads CURSOR_API_KEY / CURSOR_EMAIL
-        // from the environment (or the saved Keychain/prefs) and prints a per-day breakdown.
+        // Verify the Cursor Admin API against a real key.
+        // from the environment (or saved prefs) and prints a per-day breakdown.
         if CommandLine.arguments.contains("--cursor-test") {
             let api = CursorAdminAPI()
             let sem = DispatchSemaphore(value: 0)
@@ -87,19 +70,29 @@ enum Main {
                     return
                 }
                 do {
-                    let daily = try await api.fetchDaily(days: 7)
-                    var lines = ["Cursor usage via personal session token (last 7 days):"]
+                    let days = UsageViewModel.windowDays(today: Date())
+                    let daily = try await api.fetchDaily(days: days)
+                    var lines = ["Cursor usage via personal session token (last \(days) days, month-to-date window):"]
                     var total = 0.0
                     var tok = TokenUsage()
+                    let cal = Calendar.analytics
+                    let now = Date()
+                    let monthComp = cal.dateComponents([.year, .month], from: now)
+                    var mtd = 0.0
                     for key in daily.keys.sorted() {
                         let d = daily[key]!
                         total += d.cost
                         tok = tok + d.tokens
+                        if let date = LocalUsageScanner.parseDay(key) {
+                            let c = cal.dateComponents([.year, .month], from: date)
+                            if c.year == monthComp.year && c.month == monthComp.month { mtd += d.cost }
+                        }
                         lines.append(String(format: "  %@  $%.2f  %d events  (in %d / cacheRd %d / out %d)",
                                             key, d.cost, d.events, d.tokens.input, d.tokens.cacheRead, d.tokens.output))
                     }
                     lines.append(String(format: "TOTAL  $%.2f  in %d / cacheRd %d / out %d across %d days",
                                         total, tok.input, tok.cacheRead, tok.output, daily.count))
+                    lines.append(String(format: "THIS MONTH (calendar)  $%.2f", mtd))
                     print(lines.joined(separator: "\n"))
                 } catch {
                     print("ERROR: \(error.localizedDescription)")
@@ -114,9 +107,32 @@ enum Main {
         if let idx = CommandLine.arguments.firstIndex(of: "--export-sessions") {
             let argPath = CommandLine.arguments.indices.contains(idx + 1) ? CommandLine.arguments[idx + 1] : nil
             let path = argPath.map { ($0 as NSString).expandingTildeInPath }
-                ?? (NSHomeDirectory() as NSString).appendingPathComponent("Desktop/ai-usage-sessions.csv")
+                ?? (NSHomeDirectory() as NSString).appendingPathComponent(
+                    "Library/Application Support/AIUsageTracker/ai-usage-sessions.csv"
+                )
             SessionExport.run(to: path)
             return
+        }
+
+        // Built-in Cost Coach analysis: rank expensive local sessions, write markdown, exit.
+        //   AIUsageTracker --analyze
+        if CommandLine.arguments.contains("--analyze") {
+            let sem = DispatchSemaphore(value: 0)
+            var exitCode: Int32 = 0
+            Task.detached {
+                defer { sem.signal() }
+                do {
+                    let result = try await TranscriptAnalyzer.run()
+                    print("OK — \(result.sessionCount) sessions · \(Money.string(result.totalCost))")
+                    print("Insight engine: \(result.insightSource)")
+                    print(result.reportURL.path)
+                } catch {
+                    print("ERROR: \(error.localizedDescription)")
+                    exitCode = 1
+                }
+            }
+            sem.wait()
+            exit(exitCode)
         }
 
         // Headless self-test: scan local sessions, print a summary, and exit without any UI.
@@ -129,10 +145,18 @@ enum Main {
             )
             var claudeTotal = 0.0, cursorTotal = 0.0
             var lines: [String] = []
+            let cal = Calendar.analytics
+            let now = Date()
+            let monthComp = cal.dateComponents([.year, .month], from: now)
+            var claudeMTD = 0.0
             for key in byDay.keys.sorted() {
                 let a = byDay[key]!
                 claudeTotal += a.claudeCost
                 cursorTotal += a.cursorCost
+                if let date = LocalUsageScanner.parseDay(key) {
+                    let c = cal.dateComponents([.year, .month], from: date)
+                    if c.year == monthComp.year && c.month == monthComp.month { claudeMTD += a.claudeCost }
+                }
                 if a.claudeCost + a.cursorCost > 0 {
                     let models = a.claudeByModel.merging(a.cursorByModel) { $0 + $1 }
                         .keys.sorted().joined(separator: ", ")
@@ -140,10 +164,12 @@ enum Main {
                                         key, a.claudeCost, a.cursorCost, models))
                 }
             }
+            print("=== Local scan (list-price estimates) ===")
             print("Days with usage: \(lines.count)")
             print(lines.suffix(12).joined(separator: "\n"))
-            print(String(format: "TOTAL  Claude $%.2f  Cursor $%.2f  Combined $%.2f",
+            print(String(format: "TOTAL  Claude $%.2f  Cursor $%.2f  Combined $%.2f (naive — double-counts Claude Code in Cursor)",
                          claudeTotal, cursorTotal, claudeTotal + cursorTotal))
+            print(String(format: "THIS MONTH Claude estimate only  $%.2f", claudeMTD))
 
             if let latest = byDay.keys.sorted().last, let agg = byDay[latest] {
                 let top = agg.sessions.values
@@ -157,6 +183,49 @@ enum Main {
                                  i + 1, s.cost, s.tool, model, s.messages, s.title ?? "(untitled)"))
                 }
             }
+
+            // Also fetch Cursor billed costs when a session token is available.
+            let api = CursorPersonalAPI()
+            let sem = DispatchSemaphore(value: 0)
+            Task.detached {
+                defer { sem.signal() }
+                guard await api.isAvailable else {
+                    print("\n=== Cursor billed (personal token) ===\nNot available — sign into Cursor on this Mac.")
+                    return
+                }
+                do {
+                    let days = UsageViewModel.windowDays(today: Date())
+                    let daily = try await api.fetchDaily(days: days)
+                    var billedTotal = 0.0, billedMTD = 0.0, claudeCLIOnNonCursorDays = 0.0
+                    var billedLines: [String] = []
+                    for key in daily.keys.sorted() {
+                        let d = daily[key]!
+                        billedTotal += d.cost
+                        if let date = LocalUsageScanner.parseDay(key) {
+                            let c = cal.dateComponents([.year, .month], from: date)
+                            if c.year == monthComp.year && c.month == monthComp.month { billedMTD += d.cost }
+                        }
+                        if d.cost > 0 {
+                            billedLines.append(String(format: "  %@  $%.2f  %d events", key, d.cost, d.events))
+                        }
+                    }
+                    for key in byDay.keys {
+                        guard daily[key]?.cost ?? 0 == 0, let date = LocalUsageScanner.parseDay(key) else { continue }
+                        let c = cal.dateComponents([.year, .month], from: date)
+                        if c.year == monthComp.year && c.month == monthComp.month {
+                            claudeCLIOnNonCursorDays += byDay[key]!.claudeCost
+                        }
+                    }
+                    print("\n=== Cursor billed (personal token — authoritative) ===")
+                    print(billedLines.suffix(12).joined(separator: "\n"))
+                    print(String(format: "TOTAL billed  $%.2f", billedTotal))
+                    print(String(format: "THIS MONTH billed  $%.2f  (+ Claude CLI on non-Cursor days: $%.2f → combined ~$%.2f)",
+                                 billedMTD, claudeCLIOnNonCursorDays, billedMTD + claudeCLIOnNonCursorDays))
+                } catch {
+                    print("\n=== Cursor billed (personal token) ===\nERROR: \(error.localizedDescription)")
+                }
+            }
+            sem.wait()
             return
         }
         AIUsageTrackerApp.main()

@@ -25,6 +25,7 @@ final class CoachViewModel: ObservableObject {
 
     @Published private(set) var lastStatus: String?
     @Published private(set) var isSending = false
+    @Published private(set) var isAnalyzing = false
 
     private var dailyTimer: Timer?
 
@@ -53,8 +54,11 @@ final class CoachViewModel: ObservableObject {
     /// The day the expensive-sessions list covers, and those sessions (richest first), each
     /// paired with a data-driven coaching line. Recomputed on every usage refresh.
     var topSessionsDay: String { usage.topSessionsDay }
-    var topSessions: [(session: SessionCost, advice: String)] {
-        usage.topSessionsToday.map { ($0, CoachAdvisor.coaching(for: $0)) }
+    var topSessions: [(session: SessionCost, advice: [String])] {
+        usage.topSessionsToday.map { session in
+            let signals = TranscriptSignalsLoader.load(sessionKey: session.id)
+            return (session, CoachAdvisor.coachingTips(for: session, signals: signals, limit: 3))
+        }
     }
 
     var insight: String? {
@@ -146,29 +150,28 @@ final class CoachViewModel: ObservableObject {
         return candidate > now ? candidate : calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
     }
 
-    // MARK: Bridge to the deep-analysis tool (coach.sh)
+    // MARK: Transcript analysis
 
-    /// Launch the existing ai-coach deep analysis in Terminal (it needs the `claude` CLI and an
-    /// interactive context, so we don't embed it). Best-effort; reports status.
+    /// Rank the most expensive local sessions, write a Cost Coach markdown report under
+    /// `~/llm-coach-reports/`, and open it. Works with no extra install.
     func runDeepAnalysis() {
-        let candidates = [
-            "\(NSHomeDirectory())/Desktop/projects/ai-coach/coach.sh",
-            "../ai-coach/coach.sh",
-        ]
-        guard let script = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            lastStatus = "Couldn't find ai-coach/coach.sh."
-            return
+        guard !isAnalyzing else { return }
+        isAnalyzing = true
+        lastStatus = "Analyzing local sessions…"
+        Task {
+            defer { isAnalyzing = false }
+            do {
+                let result = try await TranscriptAnalyzer.run()
+                NSWorkspace.shared.open(result.reportURL)
+                lastStatus = "Report ready · \(result.sessionCount) sessions · \(Money.string(result.totalCost)) · \(shortEngine(result.insightSource))"
+            } catch {
+                lastStatus = "Analysis failed: \(error.localizedDescription)"
+            }
         }
-        let appleScript = "tell application \"Terminal\" to do script \"\(script)\""
-        let task = Process()
-        task.launchPath = "/usr/bin/osascript"
-        task.arguments = ["-e", appleScript]
-        do {
-            try task.run()
-            lastStatus = "Launched deep analysis in Terminal."
-        } catch {
-            lastStatus = "Couldn't launch: \(error.localizedDescription)"
-        }
+    }
+
+    private func shortEngine(_ label: String) -> String {
+        "insights: local rules"
     }
 
     // MARK: Persistence & formatting

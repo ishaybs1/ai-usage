@@ -20,26 +20,6 @@ struct MenuBarPopoverView: View {
             Text("My AI Usage")
                 .font(.headline)
 
-            // Update nudge (only when the optional feed reports a newer build).
-            if let up = viewModel.updateAvailable {
-                HStack(spacing: 8) {
-                    Image(systemName: "arrow.down.circle.fill").foregroundStyle(.tint)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Update available — v\(up.version)").font(.caption.weight(.semibold))
-                        Text(up.message).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
-                    }
-                    Spacer(minLength: 0)
-                    Button("Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(up.message, forType: .string)
-                    }
-                    .font(.caption2)
-                }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-            }
-
             // Two large numbers: combined (all tools) today and month-to-date.
             HStack(alignment: .top, spacing: 28) {
                 stat(label: "Today", value: viewModel.combinedToday)
@@ -70,10 +50,11 @@ struct MenuBarPopoverView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
-            // How to read the two numbers: Claude is priced from local tokens at list rates
-            // (an estimate — real Enterprise billing includes allowances/discounts); Cursor is the
-            // actual charged amount from Cursor's own billing.
-            Text("Claude = est. (list price) · Cursor = actual billed")
+            // How to read the two numbers: when Cursor billing API is live, Claude JSONL only
+            // counts external CLI on days without Cursor charges (avoids double-counting Claude Code).
+            Text(viewModel.cursorUsingAPI
+                 ? "Claude CLI = est. (non-Cursor days) · Cursor = actual billed"
+                 : "Claude = est. (list price) · Cursor = actual billed")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
 

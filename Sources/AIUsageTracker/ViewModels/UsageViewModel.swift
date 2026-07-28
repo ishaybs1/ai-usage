@@ -104,7 +104,6 @@ final class UsageViewModel: ObservableObject {
         self.usePersonalToken = UserDefaults.standard.object(forKey: Self.usePersonalTokenKey) as? Bool ?? true
         // Eagerly load at startup so the menu-bar title is populated before the popover opens.
         Task { await load() }
-        Task { await checkForUpdateOnce() }
     }
 
     /// The signed-in user's id, for highlighting "you" in the ranking table.
@@ -163,20 +162,9 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    private var cursorEmail: String { CursorConfig.load().email }
+    private var cursorEmail: String { CursorConfig.loadEmail() }
     /// Whether the month-to-date Cursor figure currently comes from the manual override.
     var cursorMonthIsManual: Bool { cursorRecentUnavailable && manualCursorMonth > 0 }
-
-    /// Set when a newer build is available (from the optional update feed); drives the popover nudge.
-    @Published private(set) var updateAvailable: UpdateChecker.Result?
-    private var didCheckUpdate = false
-
-    /// Check the update feed once per launch (no-op if no feed URL is configured).
-    func checkForUpdateOnce() async {
-        guard !didCheckUpdate else { return }
-        didCheckUpdate = true
-        updateAvailable = await UpdateChecker.check()
-    }
 
     /// Re-read Cursor config (after the user saves it in Settings) and reload.
     func applyCursorConfig(_ cfg: CursorConfig) async {
@@ -433,15 +421,23 @@ final class UsageViewModel: ObservableObject {
 
     // MARK: Personal computations
 
+    /// Local Claude JSONL cost for one user/day. When Cursor's billing API is active, days with
+    /// Cursor billed spend are excluded — those sessions are already in the API total (Claude Code).
+    private func claudeCostUsd(on dayKey: String, userId: String, response: UserCostResponse) -> Double {
+        if cursorUsingAPI, (cursorCostIndex[dayKey]?[userId] ?? 0) > 0 { return 0 }
+        return response.data.first { $0.userId == userId }?.costUsd ?? 0
+    }
+
     private func recomputePersonal() {
         guard let today = history.last else { return }
         let me = dataSource.currentUserId
 
         // Today's Claude spend + breakdowns.
         let mine = today.data.first { $0.userId == me }
-        mySpendToday = mine?.costUsd ?? 0
-        myProductBreakdown = mine?.breakdown?.byProduct ?? [:]
-        myModelBreakdown = mine?.breakdown?.byModel ?? [:]
+        mySpendToday = claudeCostUsd(on: today.asOfDate, userId: me, response: today)
+        let cursorCoversToday = cursorUsingAPI && (cursorCostIndex[today.asOfDate]?[me] ?? 0) > 0
+        myProductBreakdown = cursorCoversToday ? [:] : (mine?.breakdown?.byProduct ?? [:])
+        myModelBreakdown = cursorCoversToday ? [:] : (mine?.breakdown?.byModel ?? [:])
         myCursorModelBreakdown = cursorModelIndex[today.asOfDate] ?? [:]
 
         // Today's Cursor spend + fast requests.
@@ -454,7 +450,9 @@ final class UsageViewModel: ObservableObject {
             mySpendThisMonth = mySpendToday; myCursorThisMonth = myCursorToday; return
         }
         let monthResponses = responsesInMonth(of: asOf)
-        mySpendThisMonth = monthResponses.reduce(0) { $0 + ($1.data.first { $0.userId == me }?.costUsd ?? 0) }
+        mySpendThisMonth = monthResponses.reduce(0) {
+            $0 + claudeCostUsd(on: $1.asOfDate, userId: me, response: $1)
+        }
         myCursorThisMonth = monthResponses.reduce(0) { $0 + (cursorCostIndex[$1.asOfDate]?[me] ?? 0) }
         // Fallback: with no recent Cursor data, use the user's manually-entered month spend so the
         // combined total stays real (rather than silently dropping Cursor).
@@ -467,7 +465,7 @@ final class UsageViewModel: ObservableObject {
         // Previous available day (for the ▲▼ delta).
         if history.count >= 2 {
             let prev = history[history.count - 2]
-            let claudeY = prev.data.first { $0.userId == me }?.costUsd ?? 0
+            let claudeY = claudeCostUsd(on: prev.asOfDate, userId: me, response: prev)
             let cursorY = cursorCostIndex[prev.asOfDate]?[me] ?? 0
             combinedYesterday = ((claudeY + cursorY) * 100).rounded() / 100
         } else {
@@ -502,7 +500,8 @@ final class UsageViewModel: ObservableObject {
         var linesByUser: [String: Int] = [:]
         for resp in responses {
             for user in resp.data {
-                claudeByUser[user.userId] = (user.email, (claudeByUser[user.userId]?.cost ?? 0) + user.costUsd)
+                let claude = claudeCostUsd(on: resp.asOfDate, userId: user.userId, response: resp)
+                claudeByUser[user.userId] = (user.email, (claudeByUser[user.userId]?.cost ?? 0) + claude)
             }
             for (uid, cost) in cursorCostIndex[resp.asOfDate] ?? [:] {
                 cursorByUser[uid] = (cursorByUser[uid] ?? 0) + cost
@@ -541,7 +540,9 @@ final class UsageViewModel: ObservableObject {
         var points: [ToolDailyPoint] = []
         for resp in responses {
             guard let date = Self.parse(resp.asOfDate) else { continue }
-            let claudeDay = (resp.data.reduce(0) { $0 + $1.costUsd } * 100).rounded() / 100
+            let claudeDay = (resp.data.reduce(0) {
+                $0 + claudeCostUsd(on: resp.asOfDate, userId: $1.userId, response: resp)
+            } * 100).rounded() / 100
             let cursorDay = ((cursorCostIndex[resp.asOfDate]?.values.reduce(0, +) ?? 0) * 100).rounded() / 100
             points.append(ToolDailyPoint(id: "\(resp.asOfDate)|Claude", date: date, tool: "Claude", amount: claudeDay))
             points.append(ToolDailyPoint(id: "\(resp.asOfDate)|Cursor", date: date, tool: "Cursor", amount: cursorDay))
@@ -551,9 +552,13 @@ final class UsageViewModel: ObservableObject {
         // Per-model totals across the selected range.
         var claudeModels: [String: Double] = [:]
         var cursorModels: [String: Double] = [:]
+        let me = dataSource.currentUserId
         for resp in responses {
-            for (model, cost) in claudeModelIndex[resp.asOfDate] ?? [:] {
-                claudeModels[model] = (claudeModels[model] ?? 0) + cost
+            let skipClaude = cursorUsingAPI && (cursorCostIndex[resp.asOfDate]?[me] ?? 0) > 0
+            if !skipClaude {
+                for (model, cost) in claudeModelIndex[resp.asOfDate] ?? [:] {
+                    claudeModels[model] = (claudeModels[model] ?? 0) + cost
+                }
             }
             for (model, cost) in cursorModelIndex[resp.asOfDate] ?? [:] {
                 cursorModels[model] = (cursorModels[model] ?? 0) + cost

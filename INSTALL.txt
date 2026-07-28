@@ -10,11 +10,23 @@ SIMPLEST INSTALL (one paste) ★
 1. Download this zip to your ~/Downloads folder.
 2. Open Terminal, paste this ONE line, press Return:
 
-cd ~/Downloads && Z=$(ls -t AIUsageTracker*.zip | head -1) && ditto -x -k "$Z" /tmp/aiu && xattr -dr com.apple.quarantine /tmp/aiu/AIUsageTracker/AIUsageTracker.app && rm -rf /Applications/AIUsageTracker.app; cp -R /tmp/aiu/AIUsageTracker/AIUsageTracker.app /Applications/ && osascript -e 'tell application "System Events" to delete (every login item whose name is "AIUsageTracker")' 2>/dev/null; osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/AIUsageTracker.app", hidden:true, name:"AIUsageTracker"}' && open /Applications/AIUsageTracker.app && echo "Done — 🧠 is in your menu bar and will auto-start at login."
+cd ~/Downloads && Z=$(ls -t AIUsageTracker*.zip | head -1) && ditto -x -k "$Z" /tmp/aiu && xattr -dr com.apple.quarantine /tmp/aiu/AIUsageTracker/AIUsageTracker.app && rm -rf /Applications/AIUsageTracker.app; cp -R /tmp/aiu/AIUsageTracker/AIUsageTracker.app /Applications/ && mkdir -p ~/Library/LaunchAgents && cat > ~/Library/LaunchAgents/com.aiusagetracker.login.plist <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.aiusagetracker.login</string>
+  <key>ProgramArguments</key><array>
+    <string>/usr/bin/open</string><string>-ga</string>
+    <string>/Applications/AIUsageTracker.app</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+PLIST
+launchctl bootout "gui/$(id -u)/com.aiusagetracker.login" 2>/dev/null; launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.aiusagetracker.login.plist && open /Applications/AIUsageTracker.app && echo "Done — 🧠 is in your menu bar and will auto-start at login."
 
 That's it. It installs to /Applications, skips the Gatekeeper warning, launches now,
-and sets it to open automatically on every restart. (macOS may ask once to "control
-System Events" — click OK; that's what registers the auto-start.)
+and sets it to open automatically on every restart (via LaunchAgent — no System Events
+or Apple Music permission prompts).
 
 Look for the  🧠  in your menu bar (⌘-drag to reposition).
 
@@ -41,4 +53,5 @@ TROUBLESHOOTING
 ---------------
 • No 🧠 icon: it may be hidden — ⌘-drag other menu-bar icons to reveal it.
 • Cursor shows "n/a": sign into Cursor on this Mac, then reopen the app.
-• Turn off auto-start: System Settings → General → Login Items → remove it.
+• Turn off auto-start: `launchctl bootout gui/$(id -u)/com.aiusagetracker.login` and
+  remove `~/Library/LaunchAgents/com.aiusagetracker.login.plist` (or use Login Items).

@@ -34,7 +34,7 @@ enum CoachAdvisor {
          "Sonnet for chores like renames; Opus only for hard debugging."),
         ("Hand over paths and flags", "Give exact file paths and commands so the agent doesn’t reverse-engineer them.",
          "Letting it hunt for the findings PDF instead of giving the path.",
-         "“Use /Users/ishaybs/Desktop/RT-Scalability-FINDINGS.pdf.”"),
+         "“Use ~/Documents/findings.pdf — don’t search for it.”"),
         ("Say how to verify", "State the success check up front so the agent stops when it’s actually done.",
          "“update me it succeeded” with no defined check — so it can’t confirm.",
          "“Confirm the deploy by checking the feature-flag value flipped.”"),
@@ -82,18 +82,97 @@ enum CoachAdvisor {
         return nil
     }
 
-    /// A short coaching line for one expensive session.
-    static func coaching(for session: SessionCost) -> String {
+    /// Up to `limit` coaching lines for one expensive session. Prefer transcript signals so tips
+    /// cite real repo/branch/prompt facts — never pad with the same generic line across sessions.
+    static func coachingTips(
+        for session: SessionCost,
+        signals: TranscriptSignals? = nil,
+        limit: Int = 3
+    ) -> [String] {
+        var tips: [String] = []
+        let repo = signals?.repo ?? session.title.split(separator: "—").first.map { $0.trimmingCharacters(in: .whitespaces) }
+        let branch = signals?.branch
         let model = session.dominantModel.lowercased()
-        if model.contains("opus") {
-            return "Mostly Opus — use Sonnet for edits and Q&A (~5× cheaper)."
+
+        // 1) Model / cost
+        if let sig = signals, sig.opusAssistantShare >= 0.35, session.cost >= 5 {
+            let pct = Int((sig.opusAssistantShare * 100).rounded())
+            let where_ = repo.map { " in `\($0)`" } ?? ""
+            tips.append("Opus was ~\(pct)% of assistant turns\(where_) (\(Money.string(session.cost))) — keep Sonnet for build/log/check loops; escalate to Opus only when root-cause reasoning stalls.")
+        } else if model.contains("opus"), session.cost >= 3 {
+            let where_ = repo.map { " on `\($0)`" } ?? ""
+            tips.append("This\(where_) chat was mostly Opus at \(Money.string(session.cost)) — rerun routine verify/fix steps on Sonnet (~5× cheaper).")
         }
-        if session.messages >= 40 {
-            return "Long session (\(session.messages) turns) — batch discovery and state the goal up front."
+
+        // 2) Length / thread hygiene
+        if session.messages >= 80 {
+            let loc = [repo.map { "`\($0)`" }, branch.map { "`\($0)`" }].compactMap { $0 }.joined(separator: " / ")
+            let place = loc.isEmpty ? "this thread" : loc
+            tips.append("\(session.messages) billable turns on \(place) — checkpoint progress and open a **new** chat for the next milestone so prior history isn't re-sent every turn.")
+        } else if session.messages >= 25 {
+            tips.append("\(session.messages) turns already — before the next probe, paste the current hypothesis + exact command to run; don't explore with another vague ask.")
         }
-        if session.messages >= 15 {
-            return "A few back-and-forths — front-load the facts to cut follow-ups."
+
+        // 3) Short / weak prompts
+        if let sig = signals, sig.userPromptCount >= 5, sig.shortPromptShare >= 0.25 {
+            let pct = Int((sig.shortPromptShare * 100).rounded())
+            let example = sig.weakPrompts.first.map { " (e.g. “\($0)”)" } ?? ""
+            tips.append("\(pct)% of your prompts were ≤3 words\(example) — each still reloads the full thread; batch the next 2–3 asks into one message.")
         }
-        return "Say the goal and setup up front."
+
+        // 4) Interrupts
+        if let sig = signals, sig.interruptCount >= 3 {
+            tips.append("You interrupted the agent \(sig.interruptCount)× — stop/restart loops burn turns; write one message with goal + constraints + how to verify, then let it finish.")
+        }
+
+        // 5) Tool-heavy thrash
+        if let sig = signals, sig.assistantTurns > 0 {
+            let toolShare = Double(sig.toolUseTurns) / Double(sig.assistantTurns)
+            if toolShare >= 0.45, session.messages >= 20 {
+                tips.append("Tool-use was ~\(Int((toolShare * 100).rounded()))% of assistant turns — hand exact paths/commands for the next check so it doesn't keep exploring.")
+            }
+        }
+
+        // 6) Rewrite a real weak opener
+        if let weak = signals?.weakPrompts.first(where: { $0.split(whereSeparator: \.isWhitespace).count <= 4 }),
+           tips.count < limit {
+            let context = [repo, branch].compactMap { $0 }.joined(separator: " · ")
+            let prefix = context.isEmpty ? "Instead of" : "In \(context), instead of"
+            tips.append("\(prefix) “\(weak)”, write: goal + files/commands + what “done” looks like — in one message.")
+        } else if let sample = signals?.samplePrompts.first(where: { $0.count < 90 }),
+                  tips.count < limit,
+                  sample.lowercased().hasPrefix("can you") || sample.lowercased().contains("fix it") {
+            tips.append("Opener “\(sample)” is underspecified — name the failing symptom, the file/command, and the success check up front.")
+        }
+
+        // 7) Title-aware fallbacks (still specific, not the old generic pad list)
+        if let title = signals?.aiTitle ?? session.title.split(separator: "—").last.map({ $0.trimmingCharacters(in: .whitespaces) }),
+           tips.count < limit, title.count > 8 {
+            tips.append("For “\(ClaudeSessionLabel.truncateWords(title, maxWords: 8))”: state the smallest next milestone and a verify command before asking the agent to continue.")
+        }
+
+        if session.cost >= 20, tips.count < limit {
+            tips.append("At \(Money.string(session.cost)), split remaining work into scoped sessions (one milestone each) — long threads dominate spend more than model choice alone.")
+        }
+
+        // Last resorts — still vary by session numbers so they aren't identical clones.
+        let lasts = [
+            "Lead with the error signature + one command to reproduce before any “fix it” follow-up.",
+            "Prefer one packed message (context + ask + verify) over \(max(session.messages / 10, 2))+ mini follow-ups.",
+            "If the task changed mid-thread, start fresh — mixed goals inflate tokens on every later turn.",
+        ]
+        for t in lasts where tips.count < limit {
+            if !tips.contains(t) { tips.append(t) }
+        }
+
+        // Dedup while preserving order
+        var seen = Set<String>()
+        let unique = tips.filter { seen.insert($0).inserted }
+        return Array(unique.prefix(max(limit, 0)))
+    }
+
+    /// First coaching line (back-compat for call sites that want a single string).
+    static func coaching(for session: SessionCost) -> String {
+        coachingTips(for: session, limit: 1).first ?? "Lead with the error signature + one command to reproduce before any “fix it” follow-up."
     }
 }

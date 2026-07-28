@@ -9,9 +9,9 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var viewModel: UsageViewModel
 
-    @State private var email: String = CursorConfig.load().email
+    @State private var email: String = CursorConfig.loadEmail()
     @State private var apiKey: String = ""
-    @State private var hasStoredKey: Bool = !(CursorConfig.load().apiKey.isEmpty)
+    @State private var hasStoredKey: Bool = CursorConfig.hasStoredApiKey
     @State private var testResult: String?
     @State private var testOK = false
     @State private var busy = false
@@ -179,7 +179,7 @@ struct SettingsView: View {
         CursorConfig.save(apiKey: cfg.apiKey, email: cfg.email)
         hasStoredKey = !cfg.apiKey.isEmpty
         apiKey = ""
-        await viewModel.applyCursorConfig(CursorConfig.load())
+        await viewModel.applyCursorConfig(cfg)
         testResult = "Saved. Reloading usage…"
         testOK = true
     }

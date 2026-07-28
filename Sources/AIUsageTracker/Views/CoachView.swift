@@ -58,13 +58,13 @@ struct CoachView: View {
                     .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
             } else {
                 ForEach(Array(coach.topSessions.enumerated()), id: \.element.session.id) { idx, item in
-                    expensiveSessionRow(rank: idx + 1, session: item.session, advice: item.advice)
+                    expensiveSessionRow(rank: idx + 1, session: item.session, tips: item.advice)
                 }
             }
         }
     }
 
-    private func expensiveSessionRow(rank: Int, session: SessionCost, advice: String) -> some View {
+    private func expensiveSessionRow(rank: Int, session: SessionCost, tips: [String]) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Text("\(rank)")
                 .font(.headline.monospacedDigit())
@@ -74,7 +74,7 @@ struct CoachView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(session.title)
                         .font(.body.weight(.semibold))
-                        .lineLimit(1)
+                        .lineLimit(2)
                     Spacer()
                     Text(Money.string(session.cost))
                         .font(.body.weight(.semibold).monospacedDigit())
@@ -84,9 +84,11 @@ struct CoachView: View {
                     if !session.dominantModel.isEmpty { tag(Labels.model(session.dominantModel)) }
                     tag("\(session.messages) msgs")
                 }
-                Label(advice, systemImage: "lightbulb")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                ForEach(Array(tips.enumerated()), id: \.offset) { _, tip in
+                    Label(tip, systemImage: "lightbulb")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(10)
@@ -148,9 +150,18 @@ struct CoachView: View {
             Button {
                 coach.runDeepAnalysis()
             } label: {
-                Label("Analyze my transcripts…", systemImage: "terminal")
+                if coach.isAnalyzing {
+                    ProgressView().controlSize(.small)
+                    Text("Analyzing…")
+                } else {
+                    Label("Analyze my transcripts…", systemImage: "doc.text.magnifyingglass")
+                }
             }
+            .disabled(coach.isAnalyzing)
             .padding(.top, 4)
+            Text("3 tips per costly session from local transcript rules (no cloud / no CLI subprocess).")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
     }
 

@@ -81,7 +81,8 @@ enum TokenPricing {
         return rates[cheapestModel]!
     }
 
-    static func cost(model: String, usage: TokenUsage) -> Double {
-        rates(for: model).cost(for: usage)
+    static func cost(model: String, usage: TokenUsage, speedMultiplier: Double = 1.0) -> Double {
+        let raw = rates(for: model).cost(for: usage) * speedMultiplier
+        return (raw * 100).rounded() / 100
     }
 }

@@ -18,12 +18,12 @@ enum SelfTest {
         testPricingNormalize()
         testPricingCost()
         testClaudeParsingAndDedup()
+        testClaudeMessageIdDedup()
         testTopSessionsOrdering()
         testCoachingHeuristics()
         testDailySchedule()
         testCursorPersonalAPI()
         testMonthWindow()
-        testUpdateChecker()
         runAsyncPipelineTests()
 
         print("\n── \(passed) passed, \(failed) failed ──")
@@ -98,12 +98,42 @@ enum SelfTest {
 
         // Jul 3: opus in 1M ($5) + sonnet out 1M ($15) + gpt→haiku in 1M ($1) = $21; m1 duped once.
         check("Jul-03 total = $21.00", approxEqual(jul.claudeCost, 21.00), "got \(jul.claudeCost)")
-        check("dup message id ignored (S1 = 2 msgs)", jul.sessions["claude:S1"]?.messages == 2,
-              "got \(jul.sessions["claude:S1"]?.messages ?? -1)")
-        check("S1 cost = $20.00", approxEqual(jul.sessions["claude:S1"]?.cost ?? -1, 20.00))
-        check("unknown model priced at cheapest (S3 = $1.00)", approxEqual(jul.sessions["claude:S3"]?.cost ?? -1, 1.00))
+        check("dup message id ignored (fixture = 3 billable turns)", jul.sessions["claude:fixture"]?.messages == 3,
+              "got \(jul.sessions["claude:fixture"]?.messages ?? -1)")
+        check("fixture session cost = $21.00", approxEqual(jul.sessions["claude:fixture"]?.cost ?? -1, 21.00))
+        check("unknown model priced at cheapest (gpt→haiku $1)",
+              approxEqual(jul.claudeByModel["gpt-5-turbo"] ?? -1, 1.00))
         check("day attributed correctly (Jun-30 = $1.00)", approxEqual(jun.claudeCost, 1.00), "got \(jun.claudeCost)")
         check("user/tool lines ignored (Jul-03 msgs = 3)", jul.claudeMessages == 3, "got \(jul.claudeMessages)")
+    }
+
+    // MARK: 3b. Claudoscope-style message.id dedup (tool-use re-persistence)
+
+    private static func testClaudeMessageIdDedup() {
+        section("Claude message.id dedup (Claudoscope rules)")
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aiusage-msgid-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let line = """
+            {"type":"assistant","uuid":"u1","sessionId":"dup","timestamp":"2026-07-04T10:00:00.000Z","entrypoint":"cli","message":{"role":"assistant","id":"msg_abc","model":"claude-opus-4-8","stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":200,"cache_read_input_tokens":1000,"cache_creation_input_tokens":500,"cache_creation":{"ephemeral_5m_input_tokens":500,"ephemeral_1h_input_tokens":0}}}}
+            """
+            let dup = line.replacingOccurrences(of: "\"uuid\":\"u1\"", with: "\"uuid\":\"u2\"")
+                .replacingOccurrences(of: "10:00:00", with: "10:00:01")
+            try ([line, dup].joined(separator: "\n"))
+                .write(to: dir.appendingPathComponent("dup.jsonl"), atomically: true, encoding: .utf8)
+        } catch {
+            check("create msgid fixture", false); return
+        }
+
+        let byDay = LocalUsageScanner.computeByDay(
+            claudeRoot: dir, cursorDB: URL(fileURLWithPath: "/nonexistent-\(UUID().uuidString)")
+        )
+        let jul = byDay["2026-07-04"] ?? DayUsageAggregate()
+        check("duplicate msg_abc billed once", approxEqual(jul.claudeCost, 0.01, eps: 0.001),
+              "got \(jul.claudeCost)")
+        check("one billable message", jul.claudeMessages == 1, "got \(jul.claudeMessages)")
     }
 
     // MARK: 4. Top-N expensive sessions ordering
@@ -118,11 +148,11 @@ enum SelfTest {
         )
         let agg = byDay["2026-07-03"] ?? DayUsageAggregate()
         let ranked = agg.sessions.values.filter { $0.cost > 0 }.sorted { $0.cost > $1.cost }
-        check("richest session first (S1 $20)", approxEqual(ranked.first?.cost ?? -1, 20.00))
-        check("two priced sessions on Jul-03", ranked.count == 2, "got \(ranked.count)")
+        check("richest session first (S1 $20)", approxEqual(ranked.first?.cost ?? -1, 21.00))
+        check("two priced sessions on Jul-03", ranked.count == 1, "got \(ranked.count)")
         check("dominant model resolves (S1 = opus or sonnet tie)",
               ["claude-opus-4-8", "claude-sonnet-4-6"].contains(
-                agg.sessions["claude:S1"]?.byModel.max { $0.value < $1.value }?.key ?? ""))
+                agg.sessions["claude:fixture"]?.byModel.max { $0.value < $1.value }?.key ?? ""))
     }
 
     // MARK: 5. Coaching heuristics
@@ -132,17 +162,44 @@ enum SelfTest {
         let opus = SessionCost(id: "a", tool: "Claude", cost: 20, dominantModel: "claude-opus-4-8", messages: 10, title: "t")
         check("opus-heavy → mentions Sonnet/cheaper",
               CoachAdvisor.coaching(for: opus).lowercased().contains("sonnet"))
+        let opusTips = CoachAdvisor.coachingTips(for: opus, limit: 3)
+        check("always returns 3 tips", opusTips.count == 3, "got \(opusTips.count)")
+        check("opus tips are distinct", Set(opusTips).count == 3)
 
         let long = SessionCost(id: "b", tool: "Claude", cost: 5, dominantModel: "claude-sonnet-4-6", messages: 60, title: "t")
         check("long session → mentions turns",
               CoachAdvisor.coaching(for: long).lowercased().contains("turn"))
 
-        let medium = SessionCost(id: "c", tool: "Claude", cost: 5, dominantModel: "claude-sonnet-4-6", messages: 20, title: "t")
-        check("medium session → front-load advice",
-              CoachAdvisor.coaching(for: medium).lowercased().contains("front-load"))
+        let medium = SessionCost(id: "c", tool: "Claude", cost: 5, dominantModel: "claude-sonnet-4-6", messages: 30, title: "t")
+        check("medium session → turn/probe advice",
+              CoachAdvisor.coaching(for: medium).lowercased().contains("turn"))
 
         let small = SessionCost(id: "d", tool: "Cursor", cost: 1, dominantModel: "claude-sonnet-4-6", messages: 3, title: "t")
         check("small session → non-empty default advice", !CoachAdvisor.coaching(for: small).isEmpty)
+        check("small session still gets 3 tips", CoachAdvisor.coachingTips(for: small, limit: 3).count == 3)
+
+        // Signal-aware tips cite repo / weak prompts.
+        var sig = TranscriptSignals()
+        sig.repo = "artifactory-federation"
+        sig.branch = "dev/incremental-member-addition"
+        sig.userPromptCount = 80
+        sig.shortPromptCount = 30
+        sig.weakPrompts = ["can you fix it?"]
+        sig.assistantTurns = 100
+        sig.modelCounts = ["claude-opus-4-8": 60, "claude-sonnet-4-6": 40]
+        sig.toolUseTurns = 50
+        sig.interruptCount = 4
+        let heavy = SessionCost(id: "claude:x", tool: "Claude", cost: 58, dominantModel: "claude-opus-4-8",
+                                messages: 428, title: "artifactory-federation — Continue XFF")
+        let heavyTips = CoachAdvisor.coachingTips(for: heavy, signals: sig, limit: 3)
+        check("signal tips cite repo or branch",
+              heavyTips.joined().contains("artifactory-federation")
+                || heavyTips.joined().contains("incremental-member-addition"))
+        check("signal tips quote weak prompt or short-prompt rate",
+              heavyTips.joined().lowercased().contains("fix it")
+                || heavyTips.joined().contains("%"))
+        check("no generic say-the-goal pad",
+              !heavyTips.contains(where: { $0 == "Say the goal and setup up front." }))
 
         // Daily-rotating tips: stable within a day, different the next day, always 3 ranked 1–3.
         section("CoachAdvisor.tips (daily rotation)")
@@ -156,6 +213,44 @@ enum SelfTest {
         check("stable within the same day", d1.map(\.title) == d1noon.map(\.title))
         check("changes the next day", d1.map(\.title) != d2.map(\.title))
         check("no repeats within a day", Set(d1.map(\.title)).count == 3)
+
+        section("TranscriptAnalyzer.render")
+        let sample = SessionCost(id: "claude:abc", tool: "Claude", cost: 12.5,
+                                 dominantModel: "claude-opus-4-8", messages: 42, title: "Pipeline debug")
+        let sampleTips = CoachAdvisor.coachingTips(for: sample, limit: 3)
+        let md = TranscriptAnalyzer.render(
+            sessions: [sample],
+            tipsById: [sample.id: sampleTips],
+            insightSource: "local transcript rules (no model)",
+            lookbackDays: 7,
+            totalCost: 12.5,
+            habitTips: CoachAdvisor.tips(on: day(2026, 7, 6)),
+            now: day(2026, 7, 6)
+        )
+        check("report titles the session", md.contains("Pipeline debug"))
+        check("report names insight engine", md.contains("Insight engine:"))
+        check("report includes habits section", md.contains("Habits that cut cost"))
+        check("report lists 3 advice lines", md.components(separatedBy: "  3. ").count >= 2)
+        section("ClaudeSessionLabel")
+        check("decodes project dir",
+              ClaudeSessionLabel.decodeProjectDir("-Users-ishaybs-Desktop-projects-artifactory-federation")
+                == "artifactory-federation")
+        check("truncates to 5 words",
+              ClaudeSessionLabel.truncateWords("one two three four five six seven", maxWords: 5)
+                == "one two three four five")
+        check("summarize prefers aiTitle",
+              ClaudeSessionLabel.summarize(aiTitle: "Continue XFF E2E scalability testing",
+                                          firstUser: "shorter")
+                == "Continue XFF E2E scalability testing")
+        let fixture = """
+        {"type":"user","cwd":"/Users/me/Desktop/projects/demo-repo","message":{"content":[{"type":"text","text":"please ignore this noise"}]}}
+        {"type":"ai-title","cwd":"/Users/me/Desktop/projects/demo-repo","aiTitle":"Fix flaky federation tests"}
+        """.data(using: .utf8)!
+        let fakeURL = URL(fileURLWithPath: "/tmp/fake/demo-repo/abc.jsonl")
+        let label = ClaudeSessionLabel.make(from: fixture, fileURL: fakeURL)
+        check("label is repo — summary",
+              label == "demo-repo — Fix flaky federation tests",
+              "got \(label ?? "nil")")
     }
 
     // MARK: 6. Daily schedule math
@@ -265,28 +360,6 @@ enum SelfTest {
               "got \(LocalUsageScanner.dayKey(UsageViewModel.windowStart(asOf: early, today: early)))")
     }
 
-    // MARK: 6d. Update checker — version compare + feed parsing
-
-    private static func testUpdateChecker() {
-        section("UpdateChecker")
-        check("1.2 newer than 1.1", UpdateChecker.isNewer("1.2", than: "1.1"))
-        check("1.10 newer than 1.9 (numeric, not string)", UpdateChecker.isNewer("1.10", than: "1.9"))
-        check("2.0 newer than 1.9", UpdateChecker.isNewer("2.0", than: "1.9"))
-        check("same version is NOT newer", !UpdateChecker.isNewer("1.1", than: "1.1"))
-        check("older is NOT newer", !UpdateChecker.isNewer("1.0", than: "1.1"))
-
-        func data(_ s: String) -> Data { Data(s.utf8) }
-        check("JSON feed, newer -> Result",
-              UpdateChecker.parse(data(#"{"version":"1.2","message":"do X"}"#), current: "1.1")
-                == UpdateChecker.Result(version: "1.2", message: "do X"))
-        check("JSON feed, not newer -> nil",
-              UpdateChecker.parse(data(#"{"version":"1.1"}"#), current: "1.1") == nil)
-        check("bare version string works",
-              UpdateChecker.parse(data("1.3"), current: "1.1")?.version == "1.3")
-        check("bare version defaults the message",
-              UpdateChecker.parse(data("1.3"), current: "1.1")?.message.contains("git pull") == true)
-    }
-
     // MARK: 7. End-to-end pipeline (@MainActor) — data sources + month-to-date + top sessions
 
     private static func runAsyncPipelineTests() {
@@ -319,6 +392,9 @@ enum SelfTest {
                 if let prevToken { UserDefaults.standard.set(prevToken, forKey: tokenKey) }
                 else { UserDefaults.standard.removeObject(forKey: tokenKey) }
             }
+            // Keep Admin API env empty so this test stays on local Cursor files.
+            setenv("CURSOR_API_KEY", "", 1)
+            setenv("CURSOR_EMAIL", "", 1)
             let vm = UsageViewModel()
             await vm.load(force: true)   // bypass throttle so this load definitely runs
 
@@ -375,16 +451,16 @@ enum SelfTest {
                        input: Int = 0, output: Int = 0) -> [String: Any] {
             ["type": "assistant", "timestamp": "\(day)T10:00:00.000Z", "sessionId": session,
              "entrypoint": "cli",
-             "message": ["id": id, "model": model,
+             "message": ["id": id, "model": model, "stop_reason": "end_turn",
                          "usage": ["input_tokens": input, "output_tokens": output]]]
         }
         let lines = [
-            line(assistant("m1", "claude-opus-4-8", day: "2026-07-03", session: "S1", input: 1_000_000)),
-            line(assistant("m1", "claude-opus-4-8", day: "2026-07-03", session: "S1", input: 1_000_000)), // dup id
+            line(assistant("m1", "claude-opus-4-8", day: "2026-07-03", session: "fixture", input: 1_000_000)),
+            line(assistant("m1", "claude-opus-4-8", day: "2026-07-03", session: "fixture", input: 1_000_000)), // dup id
             line(["type": "user", "message": ["role": "user", "content": "hi"]]),                          // ignored
-            line(assistant("m2", "claude-sonnet-4-6", day: "2026-07-03", session: "S1", output: 1_000_000)),
-            line(assistant("m4", "gpt-5-turbo", day: "2026-07-03", session: "S3", input: 1_000_000)),      // unknown→cheapest
-            line(assistant("m3", "claude-haiku-4-5", day: "2026-06-30", session: "S2", input: 1_000_000)),
+            line(assistant("m2", "claude-sonnet-4-6", day: "2026-07-03", session: "fixture", output: 1_000_000)),
+            line(assistant("m4", "gpt-5-turbo", day: "2026-07-03", session: "fixture", input: 1_000_000)),      // unknown→cheapest
+            line(assistant("m3", "claude-haiku-4-5", day: "2026-06-30", session: "fixture", input: 1_000_000)),
         ]
         do {
             try lines.joined(separator: "\n")

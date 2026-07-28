@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 // MARK: - Cursor Admin API
 //
@@ -12,28 +13,86 @@ import Foundation
 // and a team Admin API key created at cursor.com/dashboard → API Keys. Auth is HTTP Basic with
 // the key as the username and an empty password.
 
-/// Configuration for the Cursor Admin API. The key lives in the Keychain; the email is a plain
-/// preference. Environment variables (`CURSOR_API_KEY` / `CURSOR_EMAIL`) override, for CLI tests.
+/// Configuration for the Cursor Admin API. Key + email live in UserDefaults (same as Slack
+/// webhook) — never Keychain, so macOS never shows a password / Keychain access sheet.
+/// Environment variables (`CURSOR_API_KEY` / `CURSOR_EMAIL`) override, for CLI tests.
 struct CursorConfig {
     var apiKey: String
     var email: String
 
     var isConfigured: Bool { !apiKey.isEmpty && !email.isEmpty }
 
-    private static let keyAccount = "adminApiKey"
-    private static let emailKey = "cursor.email"
+    static let apiKeyDefaultsKey = "cursor.adminApiKey"
+    static let emailDefaultsKey = "cursor.email"
+    /// Legacy Keychain account from older builds — migrated once, then deleted.
+    private static let legacyKeychainAccount = "adminApiKey"
+    private static let legacyKeychainService = "com.aiusagetracker.cursor"
 
     static func load() -> CursorConfig {
         let env = ProcessInfo.processInfo.environment
-        let key = env["CURSOR_API_KEY"] ?? Keychain.get(account: keyAccount) ?? ""
-        let email = env["CURSOR_EMAIL"] ?? UserDefaults.standard.string(forKey: emailKey) ?? ""
+        let key = env["CURSOR_API_KEY"]
+            ?? UserDefaults.standard.string(forKey: apiKeyDefaultsKey)
+            ?? migrateLegacyKeychainKey()
+            ?? ""
+        let email = env["CURSOR_EMAIL"]
+            ?? UserDefaults.standard.string(forKey: emailDefaultsKey)
+            ?? ""
         return CursorConfig(apiKey: key, email: email)
     }
 
-    /// Persists the key to the Keychain and the email to UserDefaults.
+    static func loadEmail() -> String {
+        ProcessInfo.processInfo.environment["CURSOR_EMAIL"]
+            ?? UserDefaults.standard.string(forKey: emailDefaultsKey)
+            ?? ""
+    }
+
     static func save(apiKey: String, email: String) {
-        Keychain.set(apiKey.trimmingCharacters(in: .whitespacesAndNewlines), account: keyAccount)
-        UserDefaults.standard.set(email.trimmingCharacters(in: .whitespacesAndNewlines), forKey: emailKey)
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: apiKeyDefaultsKey)
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: apiKeyDefaultsKey)
+        }
+        UserDefaults.standard.set(email.trimmingCharacters(in: .whitespacesAndNewlines), forKey: emailDefaultsKey)
+        deleteLegacyKeychainItem()
+    }
+
+    static var hasStoredApiKey: Bool {
+        !(UserDefaults.standard.string(forKey: apiKeyDefaultsKey) ?? "").isEmpty
+            || migrateLegacyKeychainKey() != nil
+    }
+
+    /// One-shot silent copy from the old Keychain item into UserDefaults (never prompts).
+    @discardableResult
+    private static func migrateLegacyKeychainKey() -> String? {
+        if let existing = UserDefaults.standard.string(forKey: apiKeyDefaultsKey), !existing.isEmpty {
+            return nil
+        }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: legacyKeychainService,
+            kSecAttrAccount as String: legacyKeychainAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: "FAIL",
+        ]
+        var out: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
+              let data = out as? Data,
+              let key = String(data: data, encoding: .utf8),
+              !key.isEmpty else { return nil }
+        UserDefaults.standard.set(key, forKey: apiKeyDefaultsKey)
+        deleteLegacyKeychainItem()
+        return key
+    }
+
+    private static func deleteLegacyKeychainItem() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: legacyKeychainService,
+            kSecAttrAccount as String: legacyKeychainAccount,
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 }
 
@@ -71,18 +130,29 @@ actor CursorAdminAPI {
     private let session: URLSession
     private var config: CursorConfig
 
-    init(config: CursorConfig = .load(), session: URLSession = .shared) {
-        self.config = config
+    /// Default init loads email only; Admin key is pulled lazily when personal-token needs fallback.
+    init(config: CursorConfig? = nil, session: URLSession = .shared) {
+        self.config = config ?? CursorConfig(apiKey: "", email: CursorConfig.loadEmail())
         self.session = session
     }
 
     func updateConfig(_ new: CursorConfig) { config = new }
-    var isConfigured: Bool { config.isConfigured }
+
+    var isConfigured: Bool {
+        if config.isConfigured { return true }
+        let loaded = CursorConfig.load()
+        if loaded.isConfigured {
+            config = loaded
+            return true
+        }
+        return false
+    }
 
     // MARK: Public
 
     /// Aggregate this user's Cursor usage for the trailing `days` window, keyed by UTC day.
     func fetchDaily(days: Int) async throws -> [String: CursorDailyUsage] {
+        _ = isConfigured   // refresh silent key if present
         guard config.isConfigured else { throw CursorAPIError.notConfigured }
         let cal = Calendar.analytics
         let end = Date()

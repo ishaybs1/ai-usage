@@ -158,99 +158,30 @@ actor LocalUsageScanner {
         }
     }
 
-    /// Byte marker for a fast pre-filter: only lines containing `"input_tokens"` can carry
-    /// usage, so we skip JSON-parsing everything else (most lines) entirely.
-    private static let usageMarker = Array("input_tokens".utf8)
-    private static let newline: UInt8 = 0x0A
-
     nonisolated private func parseClaudeFile(_ url: URL, into byDay: inout [String: DayUsageAggregate]) {
-        // Read raw bytes and split on '\n'. Iterating a Swift String by grapheme cluster
-        // (e.g. split(whereSeparator:)) is pathologically slow on multi-MB files, so we stay
-        // at the UTF-8 byte level and only build a String for lines that pass the pre-filter.
         guard let data = try? Data(contentsOf: url) else { return }
-        var seenMessageIds = Set<String>()
-
-        var start = data.startIndex
-        while start < data.endIndex {
-            let end = data[start...].firstIndex(of: Self.newline) ?? data.endIndex
-            defer { start = end < data.endIndex ? data.index(after: end) : data.endIndex }
-            let lineRange = start..<end
-            guard lineRange.count > 2 else { continue }
-            let lineData = data[lineRange]
-
-            guard Self.contains(lineData, marker: Self.usageMarker),
-                  let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                  obj["type"] as? String == "assistant",
-                  let msg = obj["message"] as? [String: Any],
-                  let msgId = msg["id"] as? String,
-                  !seenMessageIds.contains(msgId) else { continue }
-
-            let model = msg["model"] as? String ?? ""
-            guard !model.isEmpty, model != "<synthetic>",
-                  let usage = msg["usage"] as? [String: Any],
-                  (usage["input_tokens"] as? Int ?? 0) > 0
-                    || (usage["output_tokens"] as? Int ?? 0) > 0
-                    || (usage["cache_read_input_tokens"] as? Int ?? 0) > 0 else { continue }
-
-            seenMessageIds.insert(msgId)
-
-            let tokens = claudeTokens(from: usage)
-            let normalized = TokenPricing.normalize(model)
-            let cost = TokenPricing.cost(model: normalized, usage: tokens)
-
-            let ts = (obj["timestamp"] as? String).flatMap(Self.parseISO8601) ?? Date()
-            let day = Self.dayKey(ts)
-            var agg = byDay[day] ?? DayUsageAggregate()
-            agg.claudeCost = ((agg.claudeCost + cost) * 100).rounded() / 100
-            agg.claudeByModel[normalized, default: 0] = ((agg.claudeByModel[normalized, default: 0] + cost) * 100).rounded() / 100
-            let product = claudeProduct(entrypoint: obj["entrypoint"] as? String)
-            agg.claudeByProduct[product, default: 0] = ((agg.claudeByProduct[product, default: 0] + cost) * 100).rounded() / 100
-            agg.claudeTokens = agg.claudeTokens + tokens
-            if let sid = obj["sessionId"] as? String {
+        let label = ClaudeSessionLabel.make(from: data, fileURL: url)
+        let turns = ClaudeSessionBilling.billableTurns(in: data, fileURL: url)
+        for turn in turns {
+            var agg = byDay[turn.dayKey] ?? DayUsageAggregate()
+            agg.claudeCost = ((agg.claudeCost + turn.cost) * 100).rounded() / 100
+            agg.claudeByModel[turn.model, default: 0] = ((agg.claudeByModel[turn.model, default: 0] + turn.cost) * 100).rounded() / 100
+            let product = claudeProduct(entrypoint: turn.entrypoint)
+            agg.claudeByProduct[product, default: 0] = ((agg.claudeByProduct[product, default: 0] + turn.cost) * 100).rounded() / 100
+            agg.claudeTokens = agg.claudeTokens + turn.tokens
+            if let sid = turn.sessionId {
                 agg.claudeSessions.insert(sid)
                 var s = agg.sessions["claude:\(sid)"] ?? SessionAccum(tool: "Claude")
-                s.cost = ((s.cost + cost) * 100).rounded() / 100
+                s.cost = ((s.cost + turn.cost) * 100).rounded() / 100
                 s.messages += 1
-                s.byModel[normalized, default: 0] += cost
-                s.tokens = s.tokens + tokens
+                s.byModel[turn.model, default: 0] += turn.cost
+                s.tokens = s.tokens + turn.tokens
+                if s.title == nil, let label { s.title = label }
                 agg.sessions["claude:\(sid)"] = s
             }
             agg.claudeMessages += 1
-            byDay[day] = agg
+            byDay[turn.dayKey] = agg
         }
-    }
-
-    /// Naive substring search over bytes (Boyer-Moore is overkill for a short marker).
-    private static func contains(_ haystack: Data, marker: [UInt8]) -> Bool {
-        guard !marker.isEmpty, haystack.count >= marker.count else { return false }
-        let first = marker[0]
-        return haystack.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
-            let bytes = raw.bindMemory(to: UInt8.self)
-            let n = bytes.count
-            let m = marker.count
-            var i = 0
-            while i <= n - m {
-                if bytes[i] == first {
-                    var j = 1
-                    while j < m && bytes[i + j] == marker[j] { j += 1 }
-                    if j == m { return true }
-                }
-                i += 1
-            }
-            return false
-        }
-    }
-
-    nonisolated private func claudeTokens(from usage: [String: Any]) -> TokenUsage {
-        let cache = usage["cache_creation"] as? [String: Any]
-        return TokenUsage(
-            input: usage["input_tokens"] as? Int ?? 0,
-            output: usage["output_tokens"] as? Int ?? 0,
-            cacheRead: usage["cache_read_input_tokens"] as? Int ?? 0,
-            cacheWrite5m: cache?["ephemeral_5m_input_tokens"] as? Int ?? 0,
-            cacheWrite1h: cache?["ephemeral_1h_input_tokens"] as? Int
-                ?? usage["cache_creation_input_tokens"] as? Int ?? 0
-        )
     }
 
     nonisolated private func claudeProduct(entrypoint: String?) -> String {
