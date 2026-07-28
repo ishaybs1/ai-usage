@@ -819,7 +819,7 @@ pub fn top_sessions(agg: &DayUsageAggregate, limit: usize) -> Vec<SessionCost> {
                 .map(|(m, _)| m.clone())
                 .unwrap_or_default();
             let id_part = key.rsplit(':').next().unwrap_or(key);
-            let fallback = format!("{} session {}", s.tool, &id_part.chars().take(8).collect::<String>());
+            let fallback = format!("{} session {}", s.tool, id_part.chars().take(8).collect::<String>());
             SessionCost {
                 id: key.clone(),
                 tool: s.tool.clone(),

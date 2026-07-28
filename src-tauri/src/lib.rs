@@ -1,7 +1,7 @@
-pub mod coach;
+mod coach;
 mod jira;
 mod pricing;
-pub mod scanner;
+mod scanner;
 
 use chrono::{Datelike, Local, NaiveDate};
 use serde::Serialize;

@@ -99,8 +99,7 @@ fn find_codex_jsonl(session_id: &str) -> Option<std::path::PathBuf> {
 }
 
 fn parse_claude_signals(data: &[u8], path: &std::path::Path) -> TranscriptSignals {
-    let mut s = TranscriptSignals::default();
-    s.repo = scanner::repo_name(None, path);
+    let mut s = TranscriptSignals { repo: scanner::repo_name(None, path), ..Default::default() };
 
     let mut line_count = 0;
     for line in data.split(|&b| b == b'\n') {
