@@ -1,6 +1,7 @@
 mod coach;
 mod jira;
 mod pricing;
+mod remote;
 mod scanner;
 
 use chrono::{Datelike, Local, NaiveDate};
@@ -10,15 +11,15 @@ use tauri::{Manager, WindowEvent};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DayRow { date: String, claude: f64, cursor: f64, codex: f64, total: f64 }
+pub struct DayRow { date: String, claude: f64, cursor: f64, codex: f64, total: f64 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ModelRow { model: String, claude: f64, cursor: f64, codex: f64, total: f64 }
+pub struct ModelRow { model: String, claude: f64, cursor: f64, codex: f64, total: f64 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct UsageSnapshot {
+pub struct UsageSnapshot {
     as_of_date: String,
     today: f64,
     month: f64,
@@ -42,14 +43,14 @@ struct UsageSnapshot {
     codex_path: String,
 }
 
-#[tauri::command]
-fn scan_usage(range: String) -> UsageSnapshot {
+/// Same computation the desktop UI uses, shared with the optional phone-access HTTP server.
+pub fn build_snapshot(range: &str) -> UsageSnapshot {
     let data = scanner::compute_by_day();
     let now = Local::now().date_naive();
     let today_key = now.format("%Y-%m-%d").to_string();
     let yesterday_key = (now - chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
     let month_prefix = now.format("%Y-%m").to_string();
-    let start = match range.as_str() {
+    let start = match range {
         "today" => now,
         "7days" => now - chrono::Duration::days(6),
         _ => NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap(),
@@ -98,12 +99,27 @@ fn scan_usage(range: String) -> UsageSnapshot {
     }
 }
 
+#[tauri::command]
+fn scan_usage(range: String) -> UsageSnapshot {
+    build_snapshot(&range)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![scan_usage, jira::jira_push_cost])
+        .manage(remote::RemoteManager::default())
+        .invoke_handler(tauri::generate_handler![
+            scan_usage,
+            jira::jira_push_cost,
+            remote::remote_status,
+            remote::remote_enable,
+            remote::remote_disable,
+            remote::remote_regenerate_token,
+            remote::remote_start_tunnel,
+            remote::remote_stop_tunnel,
+        ])
         .setup(|app| {
             use tauri::menu::{Menu, MenuItem}; use tauri::tray::TrayIconBuilder;
             let show=MenuItem::with_id(app,"show","Open dashboard",true,None::<&str>)?;
@@ -111,7 +127,7 @@ pub fn run() {
             let menu=Menu::with_items(app,&[&show,&quit])?;
             let tray_icon = app.default_window_icon().cloned()
                 .ok_or("Windows/macOS application icon is missing")?;
-            TrayIconBuilder::new().icon(tray_icon).menu(&menu).tooltip("AI Usage Tracker").on_menu_event(|app,e| match e.id.as_ref(){"quit"=>app.exit(0),"show"=>{if let Some(w)=app.get_webview_window("main"){let _=w.show();let _=w.set_focus();}},_=>{}}).on_tray_icon_event(|tray,_|{if let Some(w)=tray.app_handle().get_webview_window("main"){let _=w.show();let _=w.set_focus();}}).build(app)?;
+            TrayIconBuilder::new().icon(tray_icon).menu(&menu).tooltip("AI Usage Tracker").on_menu_event(|app,e| match e.id.as_ref(){"quit"=>{app.state::<remote::RemoteManager>().disable();app.exit(0)},"show"=>{if let Some(w)=app.get_webview_window("main"){let _=w.show();let _=w.set_focus();}},_=>{}}).on_tray_icon_event(|tray,_|{if let Some(w)=tray.app_handle().get_webview_window("main"){let _=w.show();let _=w.set_focus();}}).build(app)?;
             Ok(())
         })
         .on_window_event(|window,event| if let WindowEvent::CloseRequested{api,..}=event { api.prevent_close(); let _=window.hide(); })

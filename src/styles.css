@@ -16,3 +16,12 @@
 .jira-err{color:#a22;font-size:10px}
 .jira-field{display:block;font-size:9px;font-weight:700;color:#9397a1;margin-top:12px}
 .jira-field input{display:block;width:100%;padding:9px;margin-top:5px;border:1px solid #dfe1e7;border-radius:7px;font-size:12px}
+/* Phone access. */
+.settings-panel h2{display:flex;align-items:center;gap:7px}
+.qr-link{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-top:14px;padding:12px;background:#f6f7f9;border-radius:9px}
+.qr-link small{display:block;font-size:9px;font-weight:700;letter-spacing:.6px;color:#9397a1}
+.qr-url{display:block;margin:5px 0 9px;font-size:10px;color:#555b67;word-break:break-all;max-width:260px}
+.qr-img{width:88px;height:88px;border-radius:6px;background:white;padding:4px;flex-shrink:0}
+.link-btn{border:1px solid #d6d0f5;background:#f6f4ff;color:#644add;border-radius:6px;padding:7px 11px;font-size:11px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:6px;margin-top:8px}
+.link-btn:disabled{opacity:.5;cursor:default}
+.link-btn.primary{background:#7357e8;border-color:#7357e8;color:white}
