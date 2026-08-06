@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AI Usage Tracker</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px 16px 40px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115; color: #e7e9ee;
+  }
+  @media (prefers-color-scheme: light) {
+    body { background: #f5f6f8; color: #1a1d23; }
+    .card, .panel { background: #fff !important; border-color: #e3e5ea !important; }
+    .muted { color: #6b7280 !important; }
+  }
+  h1 { font-size: 1.15rem; margin: 4px 0 2px; }
+  .sub { color: #9aa1ad; font-size: 0.85rem; margin: 0 0 16px; }
+  .segments { display: flex; gap: 6px; margin-bottom: 16px; }
+  .segments button {
+    flex: 1; padding: 8px 0; border-radius: 8px; border: 1px solid #2a2e37;
+    background: #171a21; color: inherit; font-size: 0.85rem;
+  }
+  .segments button.active { background: #7357e8; border-color: #7357e8; color: #fff; }
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+  .card { background: #171a21; border: 1px solid #2a2e37; border-radius: 12px; padding: 12px; }
+  .card small { display: block; color: #9aa1ad; font-size: 0.68rem; letter-spacing: .04em; }
+  .card strong { display: block; font-size: 1.3rem; margin-top: 4px; }
+  .card p { margin: 4px 0 0; font-size: 0.72rem; color: #9aa1ad; }
+  .panel {
+    background: #171a21; border: 1px solid #2a2e37; border-radius: 12px;
+    padding: 14px; margin-bottom: 14px;
+  }
+  .panel h2 { font-size: 0.95rem; margin: 0 0 10px; }
+  .session { padding: 10px 0; border-top: 1px solid #23262e; }
+  .session:first-child { border-top: none; }
+  .session-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .session-head b { font-size: 0.9rem; }
+  .session-cost { font-weight: 700; }
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
+  .tags i { font-style: normal; font-size: 0.68rem; background: #23262e; padding: 2px 7px; border-radius: 999px; color: #b7bcc7; }
+  .tip { font-size: 0.78rem; color: #c9cdd6; margin: 3px 0 0; }
+  .coach-tip { padding: 10px 0; border-top: 1px solid #23262e; }
+  .coach-tip:first-child { border-top: none; }
+  .coach-tip b { font-size: 0.85rem; }
+  .coach-tip p { margin: 3px 0 0; font-size: 0.78rem; color: #9aa1ad; }
+  .insight { background: #241f38; border: 1px solid #443a6b; border-radius: 10px; padding: 10px; font-size: 0.82rem; margin-bottom: 14px; }
+  .muted { color: #9aa1ad; }
+  .status { font-size: 0.78rem; margin-bottom: 10px; }
+  .empty { color: #6b7280; font-size: 0.82rem; padding: 6px 0; }
+  .err { background: #3a1f22; border: 1px solid #6b2b31; color: #ffb4bb; padding: 10px; border-radius: 10px; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>AI Usage Tracker</h1>
+<p class="sub" id="asof">Loading…</p>
+<div class="segments" id="segments">
+  <button data-range="today" class="active">Today</button>
+  <button data-range="7days">7 Days</button>
+  <button data-range="month">This Month</button>
+</div>
+<div id="content"><p class="muted">Fetching data from your computer…</p></div>
+
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var token = params.get('token');
+  if (token) { localStorage.setItem('aiUsageToken', token); }
+  else { token = localStorage.getItem('aiUsageToken') || ''; }
+
+  var range = 'today';
+  var money = function (n) {
+    return (n || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 });
+  };
+  var modelName = function (s) {
+    return String(s || '').replace('claude-', '').replaceAll('-', ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  };
+  var esc = function (s) {
+    var d = document.createElement('div');
+    d.textContent = String(s == null ? '' : s);
+    return d.innerHTML;
+  };
+
+  function render(data) {
+    document.getElementById('asof').textContent = 'Data as of ' + data.asOfDate;
+    var top = data.topSessions && data.topSessions.length
+      ? data.topSessions.map(function (s, i) {
+          var tips = (s.tips || []).map(function (t) { return '<p class="tip">💡 ' + esc(t) + '</p>'; }).join('');
+          return '<div class="session"><div class="session-head"><b>' + (i + 1) + '. ' + esc(s.title) + '</b><span class="session-cost">' + money(s.cost) + '</span></div>' +
+            '<div class="tags"><i>' + esc(s.tool) + '</i><i>' + esc(modelName(s.dominant_model)) + '</i><i>' + s.messages + ' messages</i>' +
+            (s.issue_key ? '<i>' + esc(s.issue_key) + '</i>' : '') + '</div>' + tips + '</div>';
+        }).join('')
+      : '<p class="empty">No priced sessions in this range.</p>';
+
+    var tips = (data.tips || []).map(function (t) {
+      return '<div class="coach-tip"><b>' + esc(t.title) + '</b><p>' + esc(t.detail) + '</p></div>';
+    }).join('');
+
+    document.getElementById('content').innerHTML =
+      (data.insight ? '<div class="insight">✨ ' + esc(data.insight) + '</div>' : '') +
+      '<div class="cards">' +
+        card('TODAY', money(data.today), 'Claude ' + money(data.claudeToday) + ' · Codex ' + money(data.codexToday)) +
+        card('THIS MONTH', money(data.month), 'Claude ' + money(data.claudeMonth) + ' · Codex ' + money(data.codexMonth)) +
+        card('SESSIONS TODAY', String(data.sessionsToday), data.messagesToday + ' priced usage events') +
+        card('CURSOR TODAY', money(data.cursorToday), 'Estimated from local token data') +
+      '</div>' +
+      '<div class="panel"><h2>Most expensive sessions</h2>' + top + '</div>' +
+      '<div class="panel"><h2>Cost coach tips</h2>' + (tips || '<p class="empty">No tips yet.</p>') + '</div>';
+  }
+
+  function card(label, value, note) {
+    return '<div class="card"><small>' + label + '</small><strong>' + value + '</strong><p>' + note + '</p></div>';
+  }
+
+  function load() {
+    document.getElementById('content').innerHTML = '<p class="muted">Refreshing…</p>';
+    fetch('/api/summary?range=' + encodeURIComponent(range) + '&token=' + encodeURIComponent(token))
+      .then(function (r) {
+        if (r.status === 401) { throw new Error('Wrong or missing access token. Open the link again from the desktop app.'); }
+        if (!r.ok) { throw new Error('Server returned ' + r.status); }
+        return r.json();
+      })
+      .then(render)
+      .catch(function (e) {
+        document.getElementById('content').innerHTML = '<div class="err">' + esc(e.message) + '</div>';
+      });
+  }
+
+  document.getElementById('segments').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-range]');
+    if (!btn) return;
+    range = btn.getAttribute('data-range');
+    Array.prototype.forEach.call(document.querySelectorAll('#segments button'), function (b) {
+      b.classList.toggle('active', b === btn);
+    });
+    load();
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>
